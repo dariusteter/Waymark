@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Waymark — European Cycling Tour Planner</title>
+<title>Waymark — European Cycle Tour Planner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..700&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
@@ -59,7 +59,7 @@
     color:var(--moss);
     margin-bottom:10px;
   }
-  .hero h1{ font-size:clamp(32px, 5vw, 54px); }
+  .hero h1{ font-size:clamp(28px, 4.2vw, 44px); }
   .hero p.sub{
     max-width:560px; margin:14px auto 0;
     color:#4A4139; font-size:16px;
@@ -221,7 +221,7 @@
 
 <div class="hero">
   <div class="eyebrow">Route planning for self-supported cycling</div>
-  <h1>Waymark</h1>
+  <h1>Waymark — European Cycle Tour Planner</h1>
   <p class="sub">Set your start, your finish, and how you like to ride — Waymark lays out a day-by-day European cycling tour with routes, elevation, food stops, sights, and places to sleep.</p>
   <svg class="ridgeline" viewBox="0 0 800 46" preserveAspectRatio="none">
     <polyline points="0,40 60,40 90,10 120,34 160,18 200,36 240,22 280,38 330,8 370,30 420,16 460,38 510,20 560,34 610,12 660,30 700,24 740,36 800,30"
@@ -955,7 +955,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
     const rawCoords = await getRoute(startPlace, endPlace, profile, apiKey); // [ [lon,lat], ... ] no elevation yet
 
     setStatus('Fetching elevation data…');
-    const sampledPoints = resamplePoints(rawCoords, 0.3); // one point every ~0.3km along the real route
+    const sampledPoints = resamplePoints(rawCoords, 0.6); // one point every ~0.6km along the real route (coarser = faster elevation fetch, still smooth charts)
     const elevations = await fetchElevations(sampledPoints);
     const coords = sampledPoints.map((p, i) => [p.lon, p.lat, elevations[i] || 0]);
 
