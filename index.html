@@ -102,6 +102,13 @@
   }
   .field{ margin-bottom:14px; }
   .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .via-row{ display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+  .via-row input{ flex:1; }
+  .via-remove{
+    flex-shrink:0; width:28px; height:28px; border:1px solid var(--leather); background:#FBF8EF;
+    border-radius:50%; color:var(--pine); font-size:15px; line-height:1; cursor:pointer; padding:0;
+  }
+  .via-remove:hover{ border-color:var(--danger); color:var(--danger); }
   input[type=text], input[type=number], select{
     width:100%; padding:9px 10px; font-size:14px;
     border:1px solid var(--leather); background:#FBF8EF;
@@ -291,6 +298,13 @@
         </fieldset>
 
         <fieldset>
+          <legend>Route through (optional)</legend>
+          <div id="viaCitiesContainer"></div>
+          <button type="button" class="btn-secondary" id="addViaBtn">+ Add a stop</button>
+          <div class="hint">Stops are visited in the order listed, between your start and destination.</div>
+        </fieldset>
+
+        <fieldset>
           <legend>Daily distance</legend>
           <div class="row2">
             <div class="field">
@@ -414,6 +428,29 @@ document.querySelectorAll('.choice-group').forEach(group => {
   });
 });
 
+// ---- Via-city rows (optional intermediate stops) ----
+let viaRowCount = 0;
+function addViaRow(focus = true){
+  viaRowCount++;
+  const row = document.createElement('div');
+  row.className = 'via-row';
+  row.innerHTML = `
+    <input type="text" class="via-input" placeholder="e.g. Garmisch-Partenkirchen, Germany">
+    <button type="button" class="via-remove" aria-label="Remove this stop">×</button>
+  `;
+  document.getElementById('viaCitiesContainer').appendChild(row);
+  if(focus) row.querySelector('.via-input').focus();
+}
+document.getElementById('addViaBtn').addEventListener('click', () => addViaRow());
+document.getElementById('viaCitiesContainer').addEventListener('click', (e) => {
+  if(e.target.classList.contains('via-remove')){
+    e.target.closest('.via-row').remove();
+  }
+});
+function getViaCities(){
+  return [...document.querySelectorAll('.via-input')].map(el => el.value.trim()).filter(Boolean);
+}
+
 // ---- Geocoding (Nominatim) ----
 async function geocode(place){
   const url = `${NOMINATIM_URL}?format=json&limit=1&q=${encodeURIComponent(place)}`;
@@ -439,22 +476,28 @@ async function reverseGeocode(lat, lon){
 }
 
 // ---- Routing (OpenRouteService) ----
-// Uses a plain GET request with the key as a query parameter — this is a CORS "simple request"
-// (no custom headers), so browsers never send a preflight OPTIONS request first. POST + a custom
-// Authorization header does require that preflight, and some networks/extensions silently break it,
-// which shows up in the browser as a generic "Failed to fetch" / "Load failed" with no real detail.
-async function getRoute(start, end, profile, apiKey){
-  const params = new URLSearchParams({
-    api_key: apiKey,
-    start: `${start.lon},${start.lat}`,
-    end: `${end.lon},${end.lat}`
-  });
-  const url = `${ORS_URL}/${profile}?${params.toString()}`;
+// Takes an ordered array of waypoints: [start, ...vias, end], each {lat, lon}.
+// Uses POST with the full coordinates array — required for multi-point routing (the lightweight
+// GET endpoint only supports a single start/end pair). This is safe from a real https:// origin;
+// it's specifically requests from a null/file:// origin that some services (like Nominatim) block.
+async function getRoute(waypoints, profile, apiKey){
+  const url = `${ORS_URL}/${profile}/geojson`;
   let res;
   try{
-    res = await fetch(url);
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': apiKey,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, application/geo+json'
+      },
+      body: JSON.stringify({
+        coordinates: waypoints.map(w => [w.lon, w.lat]),
+        radiuses: waypoints.map(() => -1) // unlimited snap radius — city centers sometimes land in water, plazas, or car-free zones
+      })
+    });
   } catch(networkErr){
-    throw new Error('The routing request never reached OpenRouteService — this is usually a network/firewall/ad-blocker issue rather than your key. Try a different network (e.g. phone hotspot), disable ad-blockers for this page, or test the key directly: paste this into your browser address bar and see what comes back — ' + url.replace(apiKey, 'YOUR_KEY'));
+    throw new Error('The routing request never reached OpenRouteService — this is usually a network/firewall/ad-blocker issue rather than your key. If you\'re opening this file directly rather than via a hosted link, that\'s the likely cause — try the hosted version instead.');
   }
   if(res.status === 401 || res.status === 403){
     throw new Error('OpenRouteService rejected your API key. Double-check it was pasted correctly, with no extra spaces.');
@@ -465,9 +508,9 @@ async function getRoute(start, end, profile, apiKey){
   if(res.status === 404){
     const body = await res.text().catch(()=> '');
     if(body.includes('2010') || body.toLowerCase().includes('routable point')){
-      throw new Error('One of your cities has no rideable road nearby (common for historic centers, canals, or pedestrian-only old towns — Venice is a classic example). Try a start/end point on the mainland edge of town, or a specific address/landmark instead of just the city name.');
+      throw new Error('One of your cities (start, destination, or a stop along the way) has no rideable road nearby — common for historic centers, canals, or pedestrian-only old towns. Try a nearby mainland point or a more specific address instead of just the city name.');
     }
-    throw new Error(`No route could be found between those two places. ${body.slice(0,150)}`);
+    throw new Error(`No route could be found connecting those cities in that order. ${body.slice(0,150)}`);
   }
   if(!res.ok){
     const body = await res.text().catch(()=> '');
@@ -475,7 +518,7 @@ async function getRoute(start, end, profile, apiKey){
   }
   const geo = await res.json();
   const feature = geo.features && geo.features[0];
-  if(!feature) throw new Error('No cycling route could be found between those two places.');
+  if(!feature) throw new Error('No cycling route could be found connecting those cities.');
   return feature.geometry.coordinates; // [ [lon, lat], ... ] — no elevation from this endpoint; added separately
 }
 
@@ -791,9 +834,10 @@ function poiListHtml(pois, emptyMsg, kind, townName){
 function renderTripSummary(trip){
   const el = document.createElement('div');
   el.className = 'card trip-summary';
+  const routeLabel = [trip.startLabel, ...trip.viaLabels, trip.endLabel].map(esc).join(' → ');
   el.innerHTML = `
     <div class="eyebrow" style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--moss);">Full journey</div>
-    <h2>${esc(trip.startLabel)} → ${esc(trip.endLabel)}</h2>
+    <h2>${routeLabel}</h2>
     <div class="stat-row">
       <div class="stat"><div class="num">${trip.totalMiles.toFixed(0)}</div><div class="lbl">Total miles</div></div>
       <div class="stat"><div class="num">${trip.days.length}</div><div class="lbl">Riding days</div></div>
@@ -815,6 +859,9 @@ function renderTripSummary(trip){
   const line = L.polyline(latlngs, { color: '#3E6259', weight: 4 }).addTo(map);
   L.marker(latlngs[0]).addTo(map).bindPopup(`Start: ${esc(trip.startLabel)}`);
   L.marker(latlngs[latlngs.length-1]).addTo(map).bindPopup(`Finish: ${esc(trip.endLabel)}`);
+  trip.viaPoints.forEach((p, i) => {
+    L.marker([p.lat, p.lon]).addTo(map).bindPopup(`Via: ${esc(trip.viaLabels[i])}`);
+  });
   trip.days.forEach((d, i) => {
     if(i === trip.days.length - 1) return; // final point already marked as finish
     const p = trip.coords[d.endIdx];
@@ -945,14 +992,18 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   document.getElementById('loading').style.display = 'block';
 
   try{
-    setStatus(`Locating ${startCityName}…`);
-    const startPlace = await geocode(startCityName);
-    setStatus(`Locating ${endCityName}…`);
-    const endPlace = await geocode(endCityName);
+    const viaCityNames = getViaCities();
+    const allCityNames = [startCityName, ...viaCityNames, endCityName];
+    const geocodedPoints = [];
+    for(let i=0; i<allCityNames.length; i++){
+      setStatus(`Locating ${allCityNames[i]}…`);
+      geocodedPoints.push(await geocode(allCityNames[i]));
+      if(i < allCityNames.length - 1) await sleep(300); // be polite to Nominatim across multiple lookups
+    }
 
     setStatus('Calculating cycling route…');
     const profile = SURFACE_PROFILE[surface];
-    const rawCoords = await getRoute(startPlace, endPlace, profile, apiKey); // [ [lon,lat], ... ] no elevation yet
+    const rawCoords = await getRoute(geocodedPoints, profile, apiKey); // [ [lon,lat], ... ] no elevation yet
 
     setStatus('Fetching elevation data…');
     const sampledPoints = resamplePoints(rawCoords, 0.6); // one point every ~0.6km along the real route (coarser = faster elevation fetch, still smooth charts)
@@ -966,7 +1017,8 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
     const rawDays = splitIntoDays(coords, cumKm, minMiles, maxMiles);
 
     const trip = {
-      startLabel: startCityName, endLabel: endCityName,
+      startLabel: startCityName, endLabel: endCityName, viaLabels: viaCityNames,
+      viaPoints: geocodedPoints.slice(1, -1),
       coords, days: rawDays,
       totalMiles, totalGainFt: elevationGainFt(coords, 0, coords.length-1)
     };
