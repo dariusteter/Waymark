@@ -302,35 +302,9 @@
       <details class="setup">
         <summary>▸ No signup needed — how routing works</summary>
         <div class="body">
-          Waymark calculates cycling routes and elevation using <strong>BRouter</strong>, a free, keyless public routing service — no account, no setup. Just fill in the form below and go.
-          <br><br>
-          If BRouter is ever slow or unavailable, you can add an <strong>OpenRouteService</strong> key below as a backup — Waymark will automatically retry with it if the free router fails. This is optional and only needed as a safety net.
+          Waymark calculates cycling routes and elevation using <strong>BRouter</strong>, a free, keyless public routing service, with an automatic backup router if it's ever unavailable. No account, no setup — just fill in the form below and go.
         </div>
       </details>
-
-      <details class="setup">
-        <summary>▸ Optional: add an OpenRouteService key as a backup</summary>
-        <div class="body">
-          <ol>
-            <li>Go to <a href="https://openrouteservice.org/dev/#/signup" target="_blank" rel="noopener">openrouteservice.org/dev/#/signup</a> and create a free account.</li>
-            <li>In your dashboard, click <strong>Create a token</strong> → choose the <strong>Standard</strong> token.</li>
-            <li>Copy the key it gives you and paste it below.</li>
-          </ol>
-          Your key stays in this browser tab only — it's never sent anywhere except OpenRouteService, and it's not saved when you close the page (unless you check "remember" below). It's only used if the free BRouter service fails.
-        </div>
-      </details>
-
-      <fieldset>
-        <legend>Routing key (optional backup)</legend>
-        <div class="field apikey-field">
-          <label class="field-label" for="apiKey">OpenRouteService API key</label>
-          <input type="text" id="apiKey" placeholder="optional — only used if the free router fails" autocomplete="off">
-        </div>
-        <div class="remember-row">
-          <input type="checkbox" id="rememberOrsKey">
-          <label for="rememberOrsKey">Remember this key on this device</label>
-        </div>
-      </fieldset>
 
       <details class="setup">
         <summary>▸ Optional: add Google for richer places data (paid, ~$0.03–0.04/place)</summary>
@@ -461,7 +435,7 @@
 </div>
 
 <footer>
-  Waymark runs entirely in your browser. Route data via BRouter (OpenRouteService as backup) · Places via OpenStreetMap · No accounts, no tracking.
+  Waymark runs entirely in your browser. Route data via BRouter · Places via OpenStreetMap · No accounts, no tracking.
 </footer>
 
 <script>
@@ -505,8 +479,13 @@ const routeCache = new Map();   // profile + waypoint signature -> route coordin
 
 // ---- units ----
 let currentUnit = 'imperial';
-const LS_ORS_KEY = 'waymark_ors_key';
 const LS_GOOGLE_KEY = 'waymark_google_key';
+
+// Backup routing key — used automatically only if the free BRouter service fails.
+// This app runs entirely client-side with no server of its own, so this key is visible
+// to anyone who views the page source; it's a free-tier OpenRouteService key with no
+// billing risk, only a shared-quota one.
+const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjBkMTcwOGEyZWYyODQxNGQ5MGI2ZDAwMDMzNjEzOTc1IiwiaCI6Im11cm11cjY0In0=';
 let cardUid = 0;
 
 function distUnitLabel(unit){ return unit === 'metric' ? 'km' : 'mi'; }
@@ -792,19 +771,15 @@ async function getRouteORS(waypoints, profile, apiKey){
 }
 
 // ---- Routing orchestrator ----
-// BRouter (free, no key) is tried first. If it fails for any reason — and the user has
-// provided an OpenRouteService key — we fall back to ORS automatically. Without a key,
-// a BRouter failure surfaces as an error suggesting the key as a backup option.
-async function getRoute(waypoints, surface, apiKey){
+// BRouter (free, no key) is tried first. If it fails for any reason, we automatically
+// fall back to OpenRouteService using the built-in backup key — no user input needed.
+async function getRoute(waypoints, surface){
   try{
     return await getRouteBRouter(waypoints, BROUTER_PROFILE[surface]);
   } catch(brouterErr){
-    console.warn('BRouter routing failed', brouterErr);
-    if(apiKey){
-      setStatus('Free router unavailable — retrying with your OpenRouteService key…');
-      return await getRouteORS(waypoints, SURFACE_PROFILE[surface], apiKey);
-    }
-    throw new Error(`${brouterErr.message} Add an OpenRouteService API key above as a backup and try again.`);
+    console.warn('BRouter routing failed, falling back to OpenRouteService', brouterErr);
+    setStatus('Free router unavailable — retrying with backup router…');
+    return await getRouteORS(waypoints, SURFACE_PROFILE[surface], ORS_API_KEY);
   }
 }
 
@@ -1138,26 +1113,16 @@ function downloadText(filename, text){
 // ---- Remembered API keys (opt-in, localStorage) ----
 function loadSavedKeys(){
   try{
-    const savedOrs = localStorage.getItem(LS_ORS_KEY);
     const savedGoogle = localStorage.getItem(LS_GOOGLE_KEY);
-    if(savedOrs){
-      document.getElementById('apiKey').value = savedOrs;
-      document.getElementById('rememberOrsKey').checked = true;
-    }
     if(savedGoogle){
       document.getElementById('googleKey').value = savedGoogle;
       document.getElementById('rememberGoogleKey').checked = true;
+      document.getElementById('savedKeysHint').style.display = 'block';
     }
-    if(savedOrs || savedGoogle) document.getElementById('savedKeysHint').style.display = 'block';
   } catch(e){ /* localStorage unavailable (private browsing, etc.) — just skip */ }
 }
 function persistKeysIfRequested(){
   try{
-    if(document.getElementById('rememberOrsKey').checked){
-      localStorage.setItem(LS_ORS_KEY, document.getElementById('apiKey').value.trim());
-    } else {
-      localStorage.removeItem(LS_ORS_KEY);
-    }
     const g = document.getElementById('googleKey').value.trim();
     if(document.getElementById('rememberGoogleKey').checked && g){
       localStorage.setItem(LS_GOOGLE_KEY, g);
@@ -1167,8 +1132,7 @@ function persistKeysIfRequested(){
   } catch(e){ /* ignore */ }
 }
 document.getElementById('forgetKeysBtn').addEventListener('click', () => {
-  try{ localStorage.removeItem(LS_ORS_KEY); localStorage.removeItem(LS_GOOGLE_KEY); } catch(e){}
-  document.getElementById('rememberOrsKey').checked = false;
+  try{ localStorage.removeItem(LS_GOOGLE_KEY); } catch(e){}
   document.getElementById('rememberGoogleKey').checked = false;
   document.getElementById('savedKeysHint').style.display = 'none';
 });
@@ -1444,7 +1408,6 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   hideError();
 
-  const apiKey = document.getElementById('apiKey').value.trim();
   const googleKey = document.getElementById('googleKey').value.trim() || null;
   const startCityName = document.getElementById('startCity').value.trim();
   const endCityName = document.getElementById('endCity').value.trim();
@@ -1488,7 +1451,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
 
     setStatus('Calculating cycling route…');
     setProgress(22);
-    const rawCoords = await getRoute(geocodedPoints, surface, apiKey); // [ [lon,lat], ... ] no elevation yet
+    const rawCoords = await getRoute(geocodedPoints, surface); // [ [lon,lat], ... ] no elevation yet
 
     setStatus('Fetching elevation data…');
     setProgress(32);
