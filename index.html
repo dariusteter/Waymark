@@ -819,22 +819,37 @@ async function fetchElevations(points){ // points: [{lon,lat}, ...] -> returns p
   return elevations;
 }
 
-// Thin a dense routing polyline down to ~every `spacingKm`, keeping the first and last point exactly.
-// Returns [{lon,lat}] — elevation is attached afterward via fetchElevations.
-function resamplePoints(coords, spacingKm){
-  const cumKm = cumulativeDistancesKm(coords);
-  const total = cumKm[cumKm.length-1];
-  const out = [{ lon: coords[0][0], lat: coords[0][1] }];
+// Pick out indices roughly every `spacingKm` apart along the route, keeping the first and
+// last point exactly. Used only to keep the Open-Meteo elevation query to a sane number of
+// requests — NOT for the geometry itself. The full-resolution road/path shape from the router
+// is always what gets drawn and exported; thinning that out was cutting straight across bends
+// and switchbacks, which is what caused the routes to visibly miss curves on the map.
+function resampleIndices(coords, cumKm, spacingKm){
+  const idxs = [0];
   let nextTarget = spacingKm;
   for(let i=1; i<coords.length; i++){
     if(cumKm[i] >= nextTarget){
-      out.push({ lon: coords[i][0], lat: coords[i][1] });
+      idxs.push(i);
       nextTarget += spacingKm;
     }
   }
-  const last = coords[coords.length-1];
-  if(out[out.length-1].lon !== last[0] || out[out.length-1].lat !== last[1]){
-    out.push({ lon: last[0], lat: last[1] });
+  if(idxs[idxs.length-1] !== coords.length-1) idxs.push(coords.length-1);
+  return idxs;
+}
+
+// Linearly interpolate the sparse elevation samples back onto every point of the full-resolution
+// route, so the detailed road/path geometry keeps its real elevation profile without needing an
+// Open-Meteo call for every single point.
+function interpolateElevations(totalPoints, sampleIdxs, sampleElevs){
+  const out = new Array(totalPoints).fill(0);
+  for(let s=0; s<sampleIdxs.length-1; s++){
+    const i0 = sampleIdxs[s], i1 = sampleIdxs[s+1];
+    const e0 = sampleElevs[s] || 0, e1 = sampleElevs[s+1] || 0;
+    const span = i1 - i0;
+    for(let i=i0; i<=i1; i++){
+      const t = span === 0 ? 0 : (i - i0) / span;
+      out[i] = e0 + (e1 - e0) * t;
+    }
   }
   return out;
 }
@@ -1455,9 +1470,15 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
 
     setStatus('Fetching elevation data…');
     setProgress(32);
-    const sampledPoints = resamplePoints(rawCoords, 0.6); // one point every ~0.6km along the real route (coarser = faster elevation fetch, still smooth charts)
-    const elevations = await fetchElevations(sampledPoints);
-    const coords = sampledPoints.map((p, i) => [p.lon, p.lat, elevations[i] || 0]);
+    // Query elevation at sparse sample points (fast), then interpolate back onto every point
+    // of the FULL-resolution route geometry — the map, GPX, and day-splitting all use the
+    // real road/path shape the router returned, not a thinned-out approximation of it.
+    const cumKmRaw = cumulativeDistancesKm(rawCoords);
+    const sampleIdxs = resampleIndices(rawCoords, cumKmRaw, 0.6); // one elevation query point every ~0.6km
+    const samplePoints = sampleIdxs.map(idx => ({ lon: rawCoords[idx][0], lat: rawCoords[idx][1] }));
+    const sampleElevations = await fetchElevations(samplePoints);
+    const pointElevations = interpolateElevations(rawCoords.length, sampleIdxs, sampleElevations);
+    const coords = rawCoords.map((p, i) => [p[0], p[1], pointElevations[i] || 0]);
     setProgress(42);
 
     const cumKm = cumulativeDistancesKm(coords);
