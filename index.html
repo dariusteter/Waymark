@@ -247,8 +247,6 @@
   }
   .remember-row input[type=checkbox]{ width:auto; }
   .remember-row label{ font-size:12px; color:#6b5f52; }
-  #savedKeysHint{ display:none; }
-  #savedKeysHint button{ padding:2px 8px; font-size:11px; margin-left:4px; }
 
   /* ---------- Disambiguation modal ---------- */
   .modal-overlay{
@@ -305,33 +303,6 @@
           Waymark calculates cycling routes and elevation using <strong>BRouter</strong>, a free, keyless public routing service, with an automatic backup router if it's ever unavailable. No account, no setup — just fill in the form below and go.
         </div>
       </details>
-
-      <details class="setup">
-        <summary>▸ Optional: add Google for richer places data (paid, ~$0.03–0.04/place)</summary>
-        <div class="body">
-          Adding a Google Places key gets you better coverage and real phone numbers for lodging, food, and attractions. It's not free like the rest of Waymark — Google requires a billing account — but at typical trip-planning volumes it's pennies per trip.
-          <ol>
-            <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">console.cloud.google.com</a>, create a project, and enable billing (a card is required, but Google won't charge anything until you exceed the small free monthly allowance).</li>
-            <li>In "APIs & Services," enable the <strong>Places API (New)</strong>.</li>
-            <li>Create an API key under "Credentials." For safety, restrict it to the Places API.</li>
-            <li>Paste it below.</li>
-          </ol>
-          Leave this blank to use only the free OpenStreetMap data (as before) — Google is tried first when a key is present, and Waymark automatically falls back to OpenStreetMap for anything Google doesn't find, so adding a key can only get you more results, never fewer.
-        </div>
-      </details>
-
-      <fieldset>
-        <legend>Google Places key (optional)</legend>
-        <div class="field apikey-field">
-          <label class="field-label" for="googleKey">Google Places API key</label>
-          <input type="text" id="googleKey" placeholder="leave blank to use free OpenStreetMap data only" autocomplete="off">
-        </div>
-        <div class="remember-row">
-          <input type="checkbox" id="rememberGoogleKey">
-          <label for="rememberGoogleKey">Remember this key on this device</label>
-        </div>
-        <div class="hint" id="savedKeysHint">Using a key saved on this device. <button type="button" id="forgetKeysBtn" class="btn-secondary">Forget saved keys</button></div>
-      </fieldset>
 
       <form id="trip-form">
         <fieldset>
@@ -479,13 +450,17 @@ const routeCache = new Map();   // profile + waypoint signature -> route coordin
 
 // ---- units ----
 let currentUnit = 'imperial';
-const LS_GOOGLE_KEY = 'waymark_google_key';
 
 // Backup routing key — used automatically only if the free BRouter service fails.
 // This app runs entirely client-side with no server of its own, so this key is visible
 // to anyone who views the page source; it's a free-tier OpenRouteService key with no
 // billing risk, only a shared-quota one.
 const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjBkMTcwOGEyZWYyODQxNGQ5MGI2ZDAwMDMzNjEzOTc1IiwiaCI6Im11cm11cjY0In0=';
+
+// Google Places API key — dedicated to this app, restricted (in Google Cloud) to only the
+// Places API (New) and to requests from this site's own domain via an HTTP referrer
+// restriction, so it can't be reused elsewhere even if scraped from the page source.
+const GOOGLE_API_KEY = 'AIzaSyCXF5m6pGoHEYe-eRO8jiybwgPWtn2AfJA';
 let cardUid = 0;
 
 function distUnitLabel(unit){ return unit === 'metric' ? 'km' : 'mi'; }
@@ -1125,33 +1100,6 @@ function downloadText(filename, text){
   URL.revokeObjectURL(a.href);
 }
 
-// ---- Remembered API keys (opt-in, localStorage) ----
-function loadSavedKeys(){
-  try{
-    const savedGoogle = localStorage.getItem(LS_GOOGLE_KEY);
-    if(savedGoogle){
-      document.getElementById('googleKey').value = savedGoogle;
-      document.getElementById('rememberGoogleKey').checked = true;
-      document.getElementById('savedKeysHint').style.display = 'block';
-    }
-  } catch(e){ /* localStorage unavailable (private browsing, etc.) — just skip */ }
-}
-function persistKeysIfRequested(){
-  try{
-    const g = document.getElementById('googleKey').value.trim();
-    if(document.getElementById('rememberGoogleKey').checked && g){
-      localStorage.setItem(LS_GOOGLE_KEY, g);
-    } else {
-      localStorage.removeItem(LS_GOOGLE_KEY);
-    }
-  } catch(e){ /* ignore */ }
-}
-document.getElementById('forgetKeysBtn').addEventListener('click', () => {
-  try{ localStorage.removeItem(LS_GOOGLE_KEY); } catch(e){}
-  document.getElementById('rememberGoogleKey').checked = false;
-  document.getElementById('savedKeysHint').style.display = 'none';
-});
-
 // ---- Shareable trip links ----
 function buildShareURL(){
   const params = new URLSearchParams();
@@ -1423,7 +1371,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   hideError();
 
-  const googleKey = document.getElementById('googleKey').value.trim() || null;
+  const googleKey = GOOGLE_API_KEY;
   const startCityName = document.getElementById('startCity').value.trim();
   const endCityName = document.getElementById('endCity').value.trim();
   const surfaceInput = document.querySelector('input[name="surface"]:checked');
@@ -1441,8 +1389,6 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   const surface = surfaceInput.value;
   if(minMiles > maxMiles){ showError(`Min ${distUnitLabel(unit)}/day should be less than or equal to max ${distUnitLabel(unit)}/day.`); return; }
   if(lodgingTypes.length === 0){ showError('Pick at least one accommodation type.'); return; }
-
-  persistKeysIfRequested();
 
   const submitBtn = document.getElementById('submitBtn');
   submitBtn.disabled = true;
@@ -1612,7 +1558,6 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   }
 });
 
-loadSavedKeys();
 prefillFromURL();
 </script>
 </body>
