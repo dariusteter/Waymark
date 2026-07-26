@@ -992,6 +992,10 @@ function poiFromElement(el){
   const tags = el.tags || {};
   const name = tags.name || tags['name:en'];
   if(!name) return null; // skip unnamed features — not useful as a recommendation
+  const phone = tags.phone || tags['contact:phone'] || null;
+  const lat = el.lat ?? (el.center && el.center.lat);
+  const lon = el.lon ?? (el.center && el.center.lon);
+  const gmapsLink = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}${lat&&lon ? `+${lat},${lon}`:''}`;
   let link;
   if(tags.website) link = tags.website;
   else if(tags['contact:website']) link = tags['contact:website'];
@@ -1000,12 +1004,10 @@ function poiFromElement(el){
     const title = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
     link = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g,'_'))}`;
   } else {
-    link = `https://www.openstreetmap.org/${el.type}/${el.id}`;
+    // No dedicated website or wikipedia entry — send them to Google Maps instead of an
+    // OpenStreetMap node page, so every link the user clicks lands on an actual map.
+    link = gmapsLink;
   }
-  const phone = tags.phone || tags['contact:phone'] || null;
-  const lat = el.lat ?? (el.center && el.center.lat);
-  const lon = el.lon ?? (el.center && el.center.lon);
-  const gmapsLink = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}${lat&&lon ? `+${lat},${lon}`:''}`;
   const bookingLink = `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(name)}`;
   return { name, link, phone, lat, lon, gmapsLink, bookingLink, tags };
 }
