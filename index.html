@@ -1351,12 +1351,18 @@ function renderDayCard(day, dayNumber, coords, unit){
   // elevation chart
   const cumKmLocal = cumulativeDistancesKm(dayCoords);
   const isMetric = unit === 'metric';
-  const labels = cumKmLocal.map(k => (isMetric ? k : k * MI_PER_KM).toFixed(1));
+  const distVals = cumKmLocal.map(k => isMetric ? k : k * MI_PER_KM);
   const elevVals = dayCoords.map(c => isMetric ? (c[2]||0) : (c[2]||0) * FT_PER_M);
+  // Plot as {x,y} pairs on a linear distance axis rather than a category axis keyed by
+  // array index. Route points aren't evenly spaced by distance (more vertices on curvy or
+  // climbing stretches, fewer on straightaways), so a category axis — which spaces points
+  // evenly by index — put mile markers at the wrong pixel position and made the map's hover
+  // dot drift further out of sync with the mouse the further along the profile you moved.
+  const chartPoints = distVals.map((d, i) => ({ x: d, y: elevVals[i] }));
   new Chart(document.getElementById(chartId), {
     type: 'line',
-    data: { labels, datasets: [{
-      data: elevVals, borderColor:'#3E6259', backgroundColor:'rgba(62,98,89,0.15)',
+    data: { datasets: [{
+      data: chartPoints, borderColor:'#3E6259', backgroundColor:'rgba(62,98,89,0.15)',
       fill: true, pointRadius: 0, borderWidth: 2, tension: 0.25
     }]},
     options: {
@@ -1364,7 +1370,7 @@ function renderDayCard(day, dayNumber, coords, unit){
       plugins: { legend: { display:false } },
       interaction: { mode: 'index', intersect: false },
       scales: {
-        x: { title: { display:true, text: isMetric ? 'Kilometers' : 'Miles', font:{size:10} }, ticks:{ maxTicksLimit:6, font:{size:9} } },
+        x: { type: 'linear', title: { display:true, text: isMetric ? 'Kilometers' : 'Miles', font:{size:10} }, ticks:{ maxTicksLimit:6, font:{size:9}, callback: v => Number(v).toFixed(1) } },
         y: { title: { display:true, text:`Elevation (${elevLbl})`, font:{size:10} }, ticks:{ font:{size:9} } }
       },
       onHover: (evt, activeElements) => {
