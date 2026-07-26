@@ -1332,6 +1332,20 @@ function renderDayCard(day, dayNumber, coords, unit){
   });
   map.fitBounds(line.getBounds(), { padding: [16,16] });
 
+  // hover dot: shown on the map at the point under the cursor on the elevation profile
+  const hoverDot = L.circleMarker(latlngs[0], {
+    radius: 7, color: '#fff', weight: 2, fillColor: '#e63946', fillOpacity: 1, pane: 'markerPane'
+  });
+  function showHoverDot(idx){
+    const p = dayCoords[idx];
+    if(!p) return;
+    hoverDot.setLatLng([p[1], p[0]]);
+    if(!map.hasLayer(hoverDot)) hoverDot.addTo(map);
+  }
+  function hideHoverDot(){
+    if(map.hasLayer(hoverDot)) map.removeLayer(hoverDot);
+  }
+
   // elevation chart
   const cumKmLocal = cumulativeDistancesKm(dayCoords);
   const isMetric = unit === 'metric';
@@ -1346,12 +1360,23 @@ function renderDayCard(day, dayNumber, coords, unit){
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display:false } },
+      interaction: { mode: 'index', intersect: false },
       scales: {
         x: { title: { display:true, text: isMetric ? 'Kilometers' : 'Miles', font:{size:10} }, ticks:{ maxTicksLimit:6, font:{size:9} } },
         y: { title: { display:true, text:`Elevation (${elevLbl})`, font:{size:10} }, ticks:{ font:{size:9} } }
+      },
+      onHover: (evt, activeElements) => {
+        if(activeElements && activeElements.length){
+          showHoverDot(activeElements[0].index);
+        } else {
+          hideHoverDot();
+        }
       }
     }
   });
+  // Chart.js keeps firing onHover with an empty array once the pointer leaves the
+  // canvas entirely in some browsers; a direct listener guarantees the dot clears.
+  document.getElementById(chartId).addEventListener('mouseleave', hideHoverDot);
 
   el.querySelector(`[data-gpx-uid="${uid}"]`).addEventListener('click', () => {
     downloadText(`waymark-day-${dayNumber}.gpx`, coordsToGpx(dayCoords, `Day ${dayNumber}: ${day.startLabel} to ${day.endLabel}`));
