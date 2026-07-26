@@ -341,7 +341,7 @@
             </div>
             <div class="field">
               <label class="field-label" id="maxMilesLabel" for="maxMiles">Max miles / day</label>
-              <input type="number" id="maxMiles" value="55" min="5" max="200" required>
+              <input type="number" id="maxMiles" value="50" min="5" max="200" required>
             </div>
           </div>
           <div class="choice-group" style="margin-top:4px;">
@@ -454,6 +454,10 @@ const routeCache = new Map();   // profile + waypoint signature -> route coordin
 
 // ---- units ----
 let currentUnit = 'imperial';
+// Per-unit defaults for the daily-distance fields. These are deliberately round numbers for
+// each unit (40/100 km isn't a literal conversion of 30/50 mi) rather than a math conversion,
+// so switching units lands on sensible values instead of odd fractional ones.
+const DISTANCE_DEFAULTS = { imperial: { min: 30, max: 50 }, metric: { min: 40, max: 100 } };
 
 // Backup routing key — used automatically only if the free BRouter service fails.
 // This app runs entirely client-side with no server of its own, so this key is visible
@@ -541,24 +545,39 @@ function updateUnitLabels(){
   document.getElementById('minMilesLabel').textContent = isMetric ? 'Min km / day' : 'Min miles / day';
   document.getElementById('maxMilesLabel').textContent = isMetric ? 'Max km / day' : 'Max miles / day';
 }
-function convertDistanceInputs(oldUnit, newUnit){
-  const minEl = document.getElementById('minMiles');
-  const maxEl = document.getElementById('maxMiles');
-  let minV = parseFloat(minEl.value), maxV = parseFloat(maxEl.value);
-  if(isNaN(minV) || isNaN(maxV)) return;
-  if(oldUnit === 'imperial' && newUnit === 'metric'){ minV = minV / MI_PER_KM; maxV = maxV / MI_PER_KM; }
-  else if(oldUnit === 'metric' && newUnit === 'imperial'){ minV = minV * MI_PER_KM; maxV = maxV * MI_PER_KM; }
-  minEl.value = Math.round(minV);
-  maxEl.value = Math.round(maxV);
+function applyDistanceDefaults(unit){
+  const d = DISTANCE_DEFAULTS[unit];
+  document.getElementById('minMiles').value = d.min;
+  document.getElementById('maxMiles').value = d.max;
 }
 document.getElementById('unitGroup').addEventListener('change', (e) => {
   if(e.target.name !== 'unit') return;
   const newUnit = e.target.value;
   if(newUnit === currentUnit) return;
-  convertDistanceInputs(currentUnit, newUnit);
   currentUnit = newUnit;
   updateUnitLabels();
+  applyDistanceDefaults(newUnit);
 });
+
+// Keep min/max daily-distance fields from crossing each other. If the user raises the
+// minimum above the current maximum, bump the maximum up to match; if they then try to
+// drop the maximum below that minimum, hold it at the minimum instead of letting it go lower.
+// Runs on 'change' (blur / spinner clicks) rather than every keystroke so mid-typing digits
+// aren't clamped before the user finishes entering a number.
+function clampDistanceRange(changed){
+  const minEl = document.getElementById('minMiles');
+  const maxEl = document.getElementById('maxMiles');
+  const minV = parseFloat(minEl.value);
+  const maxV = parseFloat(maxEl.value);
+  if(isNaN(minV) || isNaN(maxV)) return;
+  if(changed === 'min' && minV > maxV){
+    maxEl.value = minV;
+  } else if(changed === 'max' && maxV < minV){
+    maxEl.value = minV;
+  }
+}
+document.getElementById('minMiles').addEventListener('change', () => clampDistanceRange('min'));
+document.getElementById('maxMiles').addEventListener('change', () => clampDistanceRange('max'));
 
 // ---- Via-city rows (optional intermediate stops) ----
 let viaRowCount = 0;
