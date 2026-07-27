@@ -52,23 +52,6 @@
     border-bottom:1px solid var(--line);
     background:var(--parchment);
   }
-  /* Faint line-art rooftop skyline, right below the hero, fading down into the page. Opacity is
-     baked into the SVG's own fill-opacity (rather than the element's CSS opacity) so nothing else
-     on the page is affected. It's its own element (not a body background) so it lines up with the
-     bottom of the hero exactly, regardless of how tall the hero renders at a given screen width. */
-  .skyline-band{
-    display:block; width:100%; height:100px;
-    background-color:var(--parchment);
-    background-image:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27240%27 height=%27140%27 viewBox=%270 0 240 140%27%3E%3Cg fill=%27%231F2A24%27 fill-opacity=%270.09%27%3E%3Crect x=%270%27 y=%2770%27 width=%2738%27 height=%2770%27/%3E%3Cpolygon points=%270,70 19,25 38,70%27/%3E%3Crect x=%2738%27 y=%2745%27 width=%2734%27 height=%2795%27/%3E%3Cpolygon points=%2738,45 55,10 72,45%27/%3E%3Crect x=%2780%27 y=%2780%27 width=%2722%27 height=%2760%27/%3E%3Crect x=%2787%27 y=%2720%27 width=%278%27 height=%2760%27/%3E%3Cpolygon points=%2787,20 91,5 95,20%27/%3E%3Crect x=%27102%27 y=%2760%27 width=%2742%27 height=%2780%27/%3E%3Cpolygon points=%27102,60 123,20 144,60%27/%3E%3Crect x=%27144%27 y=%2775%27 width=%2736%27 height=%2765%27/%3E%3Cpolygon points=%27144,75 162,40 180,75%27/%3E%3Crect x=%27157%27 y=%2755%27 width=%2710%27 height=%2714%27/%3E%3Cpolygon points=%27157,55 162,45 167,55%27/%3E%3Crect x=%27180%27 y=%2750%27 width=%2746%27 height=%2790%27/%3E%3Cpolygon points=%27180,50 203,10 226,50%27/%3E%3Crect x=%27226%27 y=%2790%27 width=%2714%27 height=%2750%27/%3E%3Cpolygon points=%27226,90 233,65 240,90%27/%3E%3C/g%3E%3C/svg%3E");
-    background-repeat:repeat-x;
-    background-position:top;
-    /* White-to-transparent, not black-to-transparent: WebKit/Safari's mask-image defaults to
-       luminance masking, where black reads as 0% visible rather than "fully opaque." A black
-       gradient stop made the whole band evaluate to invisible in Safari. White is luminance 1
-       (visible) either way, so this fades correctly under both alpha- and luminance-mode masking. */
-    -webkit-mask-image:linear-gradient(to bottom, white 0%, white 40%, transparent 100%);
-    mask-image:linear-gradient(to bottom, white 0%, white 40%, transparent 100%);
-  }
   .hero .eyebrow{
     font-family:'IBM Plex Mono', monospace;
     font-size:12px;
@@ -82,8 +65,14 @@
     max-width:560px; margin:14px auto 0;
     color:#4A4139; font-size:16px;
   }
-  .ridgeline{
-    display:block; width:100%; height:46px; margin-top:24px;
+  /* Animated route banner (replaces the old static ridgeline + skyline band): a parallax
+     background ridge/chateau, a foreground route that's solid where "ridden" and dashed
+     where "planned" ahead, and a few pedaling cyclists. Idle by default; animates on hover
+     or keyboard focus and eases back to a stop when the pointer leaves. See the JS at the
+     bottom of the file (RouteBanner) for the per-frame logic. */
+  .route-banner{
+    display:block; width:100%; height:200px; margin-top:24px;
+    cursor:default;
   }
 
   /* ---------- Layout ---------- */
@@ -304,28 +293,140 @@
   <div class="eyebrow">Route planning for self-supported cycling</div>
   <h1>Waymark — European Cycle Tour Planner</h1>
   <p class="sub">Set your start, your finish, and how you like to ride — Waymark lays out a day-by-day European cycling tour with routes, elevation, food stops, sights, and places to sleep.</p>
-  <svg class="ridgeline" viewBox="0 0 800 46" preserveAspectRatio="none">
-    <polyline points="0,40 60,40 90,10 120,34 160,18 200,36 240,22 280,38 330,8 370,30 420,16 460,38 510,20 560,34 610,12 660,30 700,24 740,36 800,30"
-      fill="none" stroke="#3E6259" stroke-width="2" opacity="0.55"/>
-    <defs>
-      <g id="ridge-cyclist" fill="none" stroke="#3E6259" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.9">
-        <circle cx="3" cy="10.5" r="2.5"/>
-        <circle cx="13" cy="10.5" r="2.5"/>
-        <path d="M3,10.5 L7,10.5 L5.5,5.5 L12,5 L13,10.5 M7,10.5 L12,5"/>
-        <path d="M9,3.5 L5.8,6.2 L7,10.5 M8.3,4.3 L12,5"/>
-        <circle cx="9" cy="2.2" r="1.3" fill="#3E6259" stroke="none"/>
+  <div class="route-banner" id="routeBanner" aria-hidden="true">
+    <svg width="100%" height="100%" viewBox="0 0 1440 200" preserveAspectRatio="xMinYMid slice" style="display:block">
+      <defs>
+        <path id="rb-ridge" fill="none" stroke="var(--moss)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" d="M0,76 L140,58 L260,80 L380,62 L520,78 L660,54 L800,76 L886,62 L1000,62 L1080,80 L1220,58 L1340,78 L1460,64 L1600,76"/>
+        <g id="rb-chateau" transform="translate(943,62) scale(0.78) translate(-943,-62)">
+          <path fill="none" stroke="var(--moss)" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round" d="M896,62 L896,24 M912,62 L912,24 M892,24 L904,4 L916,24 Z M918,62 L918,38 M962,62 L962,38 M914,38 L940,20 L966,38 Z M968,62 L968,30 M982,62 L982,30 M964,30 L975,10 L986,30 Z M932,54 L932,45 M948,54 L948,45 M904,42 L904,34 M940,20 L940,11"/>
+        </g>
+        <path id="rb-route" fill="none" stroke="var(--moss)" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round" d="M0,130 L86,130 L150,96 L206,112 L268,84 L330,118 L396,104 L452,128 L520,110 L568,140 L640,118 L700,86 L762,120 L830,104 L900,132 L972,112 L1030,142 L1096,116 L1160,128 L1224,94 L1290,120 L1352,106 L1420,134 L1490,112 L1548,138 L1600,130"/>
+        <path id="rb-route-dash" fill="none" stroke="var(--moss)" stroke-width="3.2" stroke-dasharray="11 10" stroke-linejoin="round" stroke-linecap="round" d="M0,130 L86,130 L150,96 L206,112 L268,84 L330,118 L396,104 L452,128 L520,110 L568,140 L640,118 L700,86 L762,120 L830,104 L900,132 L972,112 L1030,142 L1096,116 L1160,128 L1224,94 L1290,120 L1352,106 L1420,134 L1490,112 L1548,138 L1600,130"/>
+        <g id="rb-pins">
+          <path d="M268,84 L268,64" fill="none" stroke="var(--moss)" stroke-width="2.4" stroke-linecap="round"/>
+          <circle cx="268" cy="59" r="4.4" fill="var(--parchment)" stroke="var(--moss)" stroke-width="2.4"/>
+          <path d="M1224,94 L1224,74" fill="none" stroke="var(--moss)" stroke-width="2.4" stroke-linecap="round"/>
+          <circle cx="1224" cy="69" r="4.4" fill="var(--parchment)" stroke="var(--moss)" stroke-width="2.4"/>
+        </g>
+        <clipPath id="rb-clip-a"><rect id="rb-rect-a" x="-40" y="-40" width="835" height="280"/></clipPath>
+        <clipPath id="rb-clip-b"><rect id="rb-rect-b" x="795" y="-40" width="6000" height="280"/></clipPath>
+      </defs>
+
+      <g data-scroll="0.34" opacity="0.55">
+        <use href="#rb-ridge" x="0"/><use href="#rb-ridge" x="1600"/><use href="#rb-ridge" x="3200"/><use href="#rb-ridge" x="4800"/>
+        <use href="#rb-chateau" x="0"/><use href="#rb-chateau" x="1600"/><use href="#rb-chateau" x="3200"/><use href="#rb-chateau" x="4800"/>
       </g>
-    </defs>
-    <!-- The outer svg stretches non-uniformly (preserveAspectRatio="none") so the ridgeline
-         reaches full width at a fixed height, which squashed these icons when they shared its
-         coordinate space. Giving each cyclist its own nested <svg> viewport (with a normal,
-         aspect-ratio-preserving viewBox) keeps them proportional no matter how wide the hero is. -->
-    <svg x="227" y="1" width="26" height="21" viewBox="0 0 16 13"><use href="#ridge-cyclist"/></svg>
-    <svg x="357" y="9" width="26" height="21" viewBox="0 0 16 13"><use href="#ridge-cyclist"/></svg>
-    <svg x="647" y="9" width="26" height="21" viewBox="0 0 16 13"><use href="#ridge-cyclist"/></svg>
-  </svg>
+
+      <g clip-path="url(#rb-clip-a)">
+        <g data-scroll="1">
+          <use href="#rb-route" x="0"/><use href="#rb-route" x="1600"/><use href="#rb-route" x="3200"/><use href="#rb-route" x="4800"/>
+        </g>
+      </g>
+
+      <g clip-path="url(#rb-clip-b)">
+        <g data-scroll="1" stroke-dasharray="11 10" opacity="0.5">
+          <use href="#rb-route-dash" x="0"/><use href="#rb-route-dash" x="1600"/><use href="#rb-route-dash" x="3200"/><use href="#rb-route-dash" x="4800"/>
+        </g>
+      </g>
+
+      <g data-scroll="1" opacity="0.85">
+        <use href="#rb-pins" x="0"/><use href="#rb-pins" x="1600"/><use href="#rb-pins" x="3200"/><use href="#rb-pins" x="4800"/>
+      </g>
+
+      <g data-rider="0" transform="translate(187,107) rotate(16)" fill="none" stroke="var(--pine)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+        <g data-body>
+          <g transform="translate(-16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <g transform="translate(16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <path d="M-16,-12 L0,-12 L-10,-31 Z M-10,-31 L10,-26 M0,-12 L10,-26 M10,-26 L16,-12 M10,-26 L15.5,-30.5 M-14.5,-32.5 L-5.5,-31"/>
+          <polyline data-leg="far" points="-8,-34 3.56,-24.4 -6.5,-12" stroke-width="3" opacity="0.45"/>
+          <path d="M-8,-34 L2,-47 M2,-47 L15,-30.5" stroke-width="3.2"/>
+          <circle cx="7" cy="-51.5" r="4.8" fill="var(--pine)" stroke="none"/>
+          <polyline data-leg="near" points="-8,-34 5.74,-28 6.5,-12" stroke-width="3"/>
+          <circle cx="0" cy="-12" r="1.9" fill="var(--pine)" stroke="none"/>
+        </g>
+      </g>
+
+      <g data-rider="1" transform="translate(446,124) rotate(23)" fill="none" stroke="var(--pine)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+        <g data-body>
+          <g transform="translate(-16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <g transform="translate(16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <path d="M-16,-12 L0,-12 L-10,-31 Z M-10,-31 L10,-26 M0,-12 L10,-26 M10,-26 L16,-12 M10,-26 L15.5,-30.5 M-14.5,-32.5 L-5.5,-31"/>
+          <polyline data-leg="far" points="-8,-34 3.56,-24.4 -6.5,-12" stroke-width="3" opacity="0.45"/>
+          <path d="M-8,-34 L2,-47 M2,-47 L15,-30.5" stroke-width="3.2"/>
+          <circle cx="7" cy="-51.5" r="4.8" fill="var(--pine)" stroke="none"/>
+          <polyline data-leg="near" points="-8,-34 5.74,-28 6.5,-12" stroke-width="3"/>
+          <circle cx="0" cy="-12" r="1.9" fill="var(--pine)" stroke="none"/>
+        </g>
+      </g>
+
+      <g data-rider="2" transform="translate(749,111) rotate(29)" fill="none" stroke="var(--pine)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+        <g data-body>
+          <g transform="translate(-16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <g transform="translate(16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <path d="M-16,-12 L0,-12 L-10,-31 Z M-10,-31 L10,-26 M0,-12 L10,-26 M10,-26 L16,-12 M10,-26 L15.5,-30.5 M-14.5,-32.5 L-5.5,-31"/>
+          <polyline data-leg="far" points="-8,-34 3.56,-24.4 -6.5,-12" stroke-width="3" opacity="0.45"/>
+          <path d="M-8,-34 L2,-47 M2,-47 L15,-30.5" stroke-width="3.2"/>
+          <circle cx="7" cy="-51.5" r="4.8" fill="var(--pine)" stroke="none"/>
+          <polyline data-leg="near" points="-8,-34 5.74,-28 6.5,-12" stroke-width="3"/>
+          <circle cx="0" cy="-12" r="1.9" fill="var(--pine)" stroke="none"/>
+        </g>
+      </g>
+
+      <g data-rider="3" transform="translate(1008,131) rotate(27)" style="display:none" fill="none" stroke="var(--pine)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+        <g data-body>
+          <g transform="translate(-16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <g transform="translate(16,-12)">
+            <circle cx="0" cy="0" r="12"/>
+            <g data-spokes opacity="0.4" stroke-width="1.5">
+              <line x1="-9" y1="0" x2="9" y2="0"/><line x1="-4.5" y1="-7.8" x2="4.5" y2="7.8"/><line x1="-4.5" y1="7.8" x2="4.5" y2="-7.8"/>
+            </g>
+          </g>
+          <path d="M-16,-12 L0,-12 L-10,-31 Z M-10,-31 L10,-26 M0,-12 L10,-26 M10,-26 L16,-12 M10,-26 L15.5,-30.5 M-14.5,-32.5 L-5.5,-31"/>
+          <polyline data-leg="far" points="-8,-34 3.56,-24.4 -6.5,-12" stroke-width="3" opacity="0.45"/>
+          <path d="M-8,-34 L2,-47 M2,-47 L15,-30.5" stroke-width="3.2"/>
+          <circle cx="7" cy="-51.5" r="4.8" fill="var(--pine)" stroke="none"/>
+          <polyline data-leg="near" points="-8,-34 5.74,-28 6.5,-12" stroke-width="3"/>
+          <circle cx="0" cy="-12" r="1.9" fill="var(--pine)" stroke="none"/>
+        </g>
+      </g>
+    </svg>
+  </div>
 </div>
-<div class="skyline-band"></div>
 
 <div class="wrap">
   <div class="grid">
@@ -1744,6 +1845,154 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
     submitBtn.disabled = false;
   }
 });
+
+// ---- Hero route banner: parallax background + a couple of cyclists pedaling along a
+// route that's solid where "ridden" and dashed where "planned" ahead. Idle by default;
+// animates on hover/focus, easing back to a stop on pointerleave/blur. Ported by hand from
+// a Claude Design prototype (bike-route-parallax-animation) into plain DOM/SVG so it needs
+// no build step or framework, matching the rest of this single-file app.
+class RouteBanner{
+  constructor(root){
+    this.root = root;
+    this.TILE = 1600;
+    this.FRAC = [0.13, 0.31, 0.52, 0.70];
+    this.speed = 90;       // px/s at full animation strength
+    this.riderCount = 3;   // 1-4
+    this.plannedRoute = true;
+    this.bannerHeight = 200;
+
+    this.svg = root.querySelector('svg');
+    this.rectA = root.querySelector('#rb-rect-a');
+    this.rectB = root.querySelector('#rb-rect-b');
+    this.scrollers = Array.from(root.querySelectorAll('[data-scroll]')).map(g => ({
+      g, rate: parseFloat(g.getAttribute('data-scroll')) || 1
+    }));
+    this.riders = Array.from(root.querySelectorAll('[data-rider]')).map((g, i) => ({
+      g,
+      body: g.querySelector('[data-body]'),
+      spokes: Array.from(g.querySelectorAll('[data-spokes]')),
+      near: g.querySelector('[data-leg="near"]'),
+      far: g.querySelector('[data-leg="far"]'),
+      phase: i * 2.2
+    }));
+    this.pts = this.parsePath(root.querySelector('#rb-route').getAttribute('d'));
+    this.offset = 0;
+    this.factor = 0;
+    this.target = 0;
+    this.W = root.clientWidth || 1440;
+    this.measure();
+    this.draw(0);
+
+    this.tick = this.tick.bind(this);
+    this.onEnter = () => { this.target = 1; this.start(); };
+    this.onLeave = () => { this.target = 0; this.start(); };
+    root.addEventListener('pointerenter', this.onEnter);
+    root.addEventListener('pointerleave', this.onLeave);
+
+    if(typeof ResizeObserver !== 'undefined'){
+      this.ro = new ResizeObserver(() => this.measure());
+      this.ro.observe(root);
+    }
+  }
+
+  start(){
+    if(this.raf) return;
+    this.last = performance.now();
+    this.raf = requestAnimationFrame(this.tick);
+  }
+
+  parsePath(d){
+    const n = (d.match(/-?[\d.]+/g) || []).map(Number);
+    const p = [];
+    for(let i = 0; i < n.length; i += 2) p.push([n[i], n[i+1]]);
+    return p;
+  }
+
+  measure(){
+    const h = this.bannerHeight;
+    this.root.style.height = h + 'px';
+    this.W = Math.max(320, this.root.clientWidth || 1440);
+    this.H = h;
+    this.svg.setAttribute('viewBox', `0 0 ${this.W} ${this.H}`);
+    this.baseY = 0.5 * (this.H - 200);
+    const count = Math.max(1, Math.min(4, this.riderCount));
+    this.count = count;
+    const boundary = Math.round(this.W * this.FRAC[count-1] + 48);
+    this.rectA.setAttribute('width', String(this.plannedRoute ? boundary + 40 : this.W + 4000));
+    this.rectB.setAttribute('x', String(this.plannedRoute ? boundary : this.W + 6000));
+    this.riders.forEach((r, i) => { r.g.style.display = i < count ? '' : 'none'; });
+  }
+
+  // Position + local slope of the route at x (tiled every TILE px), via linear interpolation
+  // between the path's own vertices -- used to place each rider on the line and tilt them
+  // to match the road's grade.
+  at(x){
+    const T = this.TILE;
+    const w = ((x % T) + T) % T;
+    const p = this.pts;
+    let i = 0;
+    while(i < p.length - 2 && p[i+1][0] < w) i++;
+    const a = p[i], b = p[i+1] || p[i];
+    const dx = (b[0] - a[0]) || 1;
+    const t = (w - a[0]) / dx;
+    return { y: a[1] + t * (b[1] - a[1]), slope: (b[1] - a[1]) / dx };
+  }
+
+  // Two-bone IK for a pedaling leg: given a hip anchor and a crank angle, finds the knee
+  // position so the leg's two segments (thigh/shin) reach from hip to pedal.
+  leg(el, hip, theta, cx, cy, cr, L1, L2){
+    const px = cx + cr * Math.cos(theta), py = cy + cr * Math.sin(theta);
+    const dx = px - hip[0], dy = py - hip[1];
+    const len = Math.hypot(dx, dy) || 1;
+    const d = Math.min(len, L1 + L2 - 0.5);
+    const ux = dx / len, uy = dy / len;
+    const a = (d * d + L1 * L1 - L2 * L2) / (2 * d);
+    const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
+    let nx = uy, ny = -ux;
+    if(nx < 0){ nx = -nx; ny = -ny; }
+    const kx = hip[0] + a * ux + h * nx, ky = hip[1] + a * uy + h * ny;
+    el.setAttribute('points', `${hip[0]},${hip[1]} ${kx.toFixed(2)},${ky.toFixed(2)} ${px.toFixed(2)},${py.toFixed(2)}`);
+  }
+
+  draw(dt){
+    const speed = this.speed * this.factor;
+    this.offset += speed * dt;
+    const T = this.TILE, off = this.offset;
+    for(const s of this.scrollers){
+      s.g.setAttribute('transform', `translate(${(-(off * s.rate) % T).toFixed(2)},${this.baseY.toFixed(2)})`);
+    }
+    const wheelDeg = (off / 12) * (180 / Math.PI);
+    for(let i = 0; i < this.count; i++){
+      const r = this.riders[i];
+      const x = this.W * this.FRAC[i];
+      const g = this.at(x + off);
+      const ang = Math.atan2(g.slope, 1);
+      r.g.setAttribute('transform', `translate(${x.toFixed(1)},${(g.y + this.baseY).toFixed(2)}) rotate(${(ang * 180 / Math.PI).toFixed(2)})`);
+      // Slower cadence climbing, faster descending -- same road-feel touch as the original design.
+      const grade = Math.max(-0.6, Math.min(0.6, -g.slope));
+      const cad = Math.max(0.3, 1 - grade * 0.85);
+      r.phase += dt * (speed / 165) * 2 * Math.PI * cad;
+      const th = r.phase;
+      this.leg(r.near, [-8, -34], th, 0, -12, 6.5, 15, 16);
+      this.leg(r.far, [-8, -34], th + Math.PI, 0, -12, 6.5, 15, 16);
+      r.body.setAttribute('transform', `translate(0,${(Math.sin(th * 2) * 0.55).toFixed(2)})`);
+      for(const sp of r.spokes) sp.setAttribute('transform', `rotate(${wheelDeg.toFixed(1)})`);
+    }
+  }
+
+  tick(now){
+    const dt = Math.min(0.05, (now - this.last) / 1000);
+    this.last = now;
+    // Eases in a bit faster than it eases back out, so it feels responsive to hover but settles gently.
+    const rate = this.target > this.factor ? 1 / 0.3 : 1 / 0.45;
+    this.factor += Math.sign(this.target - this.factor) * Math.min(Math.abs(this.target - this.factor), rate * dt);
+    this.draw(dt);
+    if(this.factor <= 0.0005 && this.target === 0){ this.factor = 0; this.raf = null; return; }
+    this.raf = requestAnimationFrame(this.tick);
+  }
+}
+const routeBannerEl = document.getElementById('routeBanner');
+if(routeBannerEl) new RouteBanner(routeBannerEl);
 
 prefillFromURL();
 </script>
