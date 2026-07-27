@@ -401,6 +401,10 @@
             <label class="choice"><input type="checkbox" name="food" value="restaurant">Restaurants</label>
             <label class="choice"><input type="checkbox" name="food" value="grocery">Groceries for a picnic</label>
           </div>
+          <div class="choice-group" style="margin-top:8px;">
+            <label class="choice"><input type="checkbox" id="vegetarianPref">Prefer vegetarian</label>
+          </div>
+          <div class="hint">Vegetarian tagging on OpenStreetMap is patchy — if nothing nearby is tagged vegetarian, you'll still see the closest general restaurant options, with a note that vegetarian wasn't confirmed.</div>
         </fieldset>
 
         <fieldset>
@@ -411,6 +415,7 @@
             <label class="choice"><input type="checkbox" name="lodging" value="guest_house">Guest house</label>
             <label class="choice"><input type="checkbox" name="lodging" value="hotel">Hotel</label>
           </div>
+          <div class="hint">Choosing Camping shifts each day's length (within your min/max range) to end at a town with a tagged campground where possible, instead of a fixed distance — you'll see a note on any day where none turned up nearby.</div>
           <div class="field" style="margin-top:12px;">
             <label class="field-label" for="budget">Budget</label>
             <select id="budget">
@@ -920,9 +925,31 @@ function nearestCoordIndex(coords, lat, lon){
   return best;
 }
 
+// Single Overpass lookup for campgrounds anywhere within the bounding box spanning
+// coords[fromIdx..toIdx], padded a little so sites just off the exact path still turn up.
+// Used only by splitIntoDays below, to decide where a camping day should end.
+async function findCampgroundsInBox(coords, fromIdx, toIdx){
+  const slice = coords.slice(fromIdx, toIdx + 1);
+  if(!slice.length) return [];
+  const pad = 0.05; // roughly 5km
+  const lats = slice.map(c => c[1]), lons = slice.map(c => c[0]);
+  const minLat = Math.min(...lats) - pad, maxLat = Math.max(...lats) + pad;
+  const minLon = Math.min(...lons) - pad, maxLon = Math.max(...lons) + pad;
+  const ql = `[out:json][timeout:20];(node["tourism"="camp_site"](${minLat},${minLon},${maxLat},${maxLon});way["tourism"="camp_site"](${minLat},${minLon},${maxLat},${maxLon}););out center;`;
+  const els = await overpassQuery(ql);
+  return els
+    .map(el => ({ lat: el.lat ?? (el.center && el.center.lat), lon: el.lon ?? (el.center && el.center.lon) }))
+    .filter(c => c.lat != null && c.lon != null);
+}
+
 // forcedIndices: coordinate indices (e.g. via-cities with rest nights) that must always
 // fall exactly on a day boundary — each inter-via segment is then split independently.
-function splitIntoDays(coords, cumKm, minMiles, maxMiles, elevationAware, forcedIndices){
+// When requireCamping is true, each day's endpoint (as long as the day still has room to
+// move within the min/max range — the last day of a segment is always forced to end exactly
+// at the destination/via-stop regardless) is nudged to the closest point in that range with
+// a tagged campground nearby, falling back to the ordinary distance-based endpoint (flagged
+// via noCampgroundFound) when OpenStreetMap has none for that stretch.
+async function splitIntoDays(coords, cumKm, minMiles, maxMiles, elevationAware, forcedIndices, requireCamping){
   const cumEff = elevationAware ? cumulativeEffortKm(coords, cumKm) : cumKm;
   const minKm = minMiles / MI_PER_KM;
   const maxKm = maxMiles / MI_PER_KM;
@@ -950,7 +977,33 @@ function splitIntoDays(coords, cumKm, minMiles, maxMiles, elevationAware, forced
       while(endIdx < segEnd && cumEff[endIdx] < goalEff) endIdx++;
       if(endIdx <= startIdx) endIdx = Math.min(startIdx + 1, segEnd);
 
-      days.push({ startIdx, endIdx });
+      let noCampgroundFound = false;
+      if(requireCamping && remainingEff > maxKm){
+        let minIdx = startIdx;
+        while(minIdx < segEnd && cumEff[minIdx] < startEff + minKm) minIdx++;
+        let maxIdx = startIdx;
+        while(maxIdx < segEnd && cumEff[maxIdx] < startEff + maxKm) maxIdx++;
+        if(maxIdx > minIdx){
+          try{
+            const campgrounds = await findCampgroundsInBox(coords, startIdx, maxIdx);
+            let best = null, bestDelta = Infinity;
+            for(const c of campgrounds){
+              const nearIdx = nearestCoordIndex(coords.slice(startIdx, maxIdx + 1), c.lat, c.lon) + startIdx;
+              if(nearIdx < minIdx || nearIdx > maxIdx) continue;
+              const distKm = haversineKm(coords[nearIdx][0], coords[nearIdx][1], c.lon, c.lat);
+              if(distKm > 6) continue; // too far off the route to count as "this town"
+              const delta = Math.abs(cumEff[nearIdx] - goalEff);
+              if(delta < bestDelta){ bestDelta = delta; best = nearIdx; }
+            }
+            if(best !== null){ endIdx = best; } else { noCampgroundFound = true; }
+          } catch(e){
+            console.warn('Campground lookup failed, using the default day length', e);
+            noCampgroundFound = true;
+          }
+        }
+      }
+
+      days.push({ startIdx, endIdx, noCampgroundFound });
       startIdx = endIdx;
       if(endIdx >= segEnd) break;
     }
@@ -1095,14 +1148,19 @@ async function findAttractions(points, googleApiKey){
   return dedupe(els.map(poiFromElement)).slice(0, 5);
 }
 
-async function findFood(point, wantRestaurant, wantGrocery, googleApiKey){
-  if(googleApiKey){
+async function findFood(point, wantRestaurant, wantGrocery, wantVegetarian, googleApiKey){
+  // Google Places' nearby-search endpoint has no dietary filter, so a vegetarian preference
+  // only has a real effect via OpenStreetMap's diet:vegetarian/diet:vegan tags -- when it's
+  // checked, restaurants are always looked up through Overpass instead, skipping Google, so
+  // the preference can actually be applied rather than silently ignored.
+  const useGoogle = googleApiKey && !(wantRestaurant && wantVegetarian);
+  if(useGoogle){
     const types = [];
     if(wantRestaurant) types.push('restaurant');
     if(wantGrocery) types.push('supermarket', 'grocery_store', 'convenience_store');
     if(types.length){
       const gr = await findPlacesGoogle(point, types, 2500, googleApiKey);
-      if(gr && gr.length) return gr.slice(0, 5);
+      if(gr && gr.length){ gr.vegUnmet = false; return gr.slice(0, 5); }
     }
   }
   let clauses = '';
@@ -1111,10 +1169,29 @@ async function findFood(point, wantRestaurant, wantGrocery, googleApiKey){
     node["shop"="supermarket"](around:2500,${point.lat},${point.lon});
     node["shop"="bakery"](around:2500,${point.lat},${point.lon});
     node["shop"="convenience"](around:2500,${point.lat},${point.lon});`;
-  if(!clauses) return [];
+  if(!clauses){ const empty = []; empty.vegUnmet = false; return empty; }
   const ql = `[out:json][timeout:25];(${clauses});out center 12;`;
   const els = await overpassQuery(ql);
-  return dedupe(els.map(poiFromElement)).slice(0, 5);
+  let pois = dedupe(els.map(poiFromElement));
+
+  let vegUnmet = false;
+  if(wantRestaurant && wantVegetarian){
+    const isVeg = p => {
+      const diet = p.tags && (p.tags['diet:vegetarian'] || p.tags['diet:vegan']);
+      return diet === 'yes' || diet === 'only';
+    };
+    const vegOnes = pois.filter(isVeg);
+    if(vegOnes.length){
+      // Lead with vegetarian-tagged places but keep the rest available below them, rather
+      // than hiding non-vegetarian options the user might still be fine with.
+      pois = [...vegOnes, ...pois.filter(p => !isVeg(p))];
+    } else {
+      vegUnmet = true;
+    }
+  }
+  const result = pois.slice(0, 5);
+  result.vegUnmet = vegUnmet;
+  return result;
 }
 
 // points: array of {lat,lon} anchors (raw route point, plus the resolved town-center point
@@ -1178,6 +1255,7 @@ function buildShareURL(){
   const surfaceInput = document.querySelector('input[name="surface"]:checked');
   if(surfaceInput) params.set('surface', surfaceInput.value);
   params.set('food', getChecked('food').join(','));
+  params.set('veg', document.getElementById('vegetarianPref').checked ? '1' : '0');
   params.set('lodging', getChecked('lodging').join(','));
   params.set('budget', document.getElementById('budget').value);
   return `${location.origin}${location.pathname}?${params.toString()}`;
@@ -1225,6 +1303,11 @@ function prefillFromURL(){
     const inp = document.querySelector(`input[name="food"][value="${v}"]`);
     if(inp){ inp.checked = true; inp.closest('.choice').classList.add('active'); }
   });
+  if(params.has('veg')){
+    const vegInp = document.getElementById('vegetarianPref');
+    vegInp.checked = params.get('veg') === '1';
+    if(vegInp.checked) vegInp.closest('.choice').classList.add('active');
+  }
   (params.get('lodging') || '').split(',').filter(Boolean).forEach(v => {
     const inp = document.querySelector(`input[name="lodging"][value="${v}"]`);
     if(inp){ inp.checked = true; inp.closest('.choice').classList.add('active'); }
@@ -1323,6 +1406,7 @@ function renderRestDayCard(day){
       </div>
       <div class="poi-col">
         <h4>Food</h4>
+        ${day.food.vegUnmet ? `<div class="hint" style="margin:-2px 0 8px;">No vegetarian-tagged restaurant found near this stop — showing general options instead.</div>` : ''}
         ${poiListHtml(day.food, 'No eating preference selected, or nothing tagged nearby.', 'food', day.townLabel)}
       </div>
       <div class="poi-col">
@@ -1346,6 +1430,7 @@ function renderDayCard(day, dayNumber, coords, unit){
   el.innerHTML = `
     <div class="day-eyebrow"><span class="day-badge">Day ${dayNumber}</span></div>
     ${day.dayError ? `<div class="day-warning">Some details for this day couldn't be loaded — the route and mileage are still accurate.</div>` : ''}
+    ${day.noCampgroundFound ? `<div class="day-warning">No tagged campground found within your daily range near this stop — the day length shown is the ordinary distance-based default instead.</div>` : ''}
     <h3>${esc(day.startLabel)} → ${esc(day.endLabel)}</h3>
     <div class="day-stats">
       <div class="stat"><div class="num">${distDisplay1(day.miles, unit)}</div><div class="lbl">${esc(distLbl)}</div></div>
@@ -1360,6 +1445,7 @@ function renderDayCard(day, dayNumber, coords, unit){
       </div>
       <div class="poi-col">
         <h4>Lunch stop (~midpoint)</h4>
+        ${day.food.vegUnmet ? `<div class="hint" style="margin:-2px 0 8px;">No vegetarian-tagged restaurant found near this stop — showing general options instead.</div>` : ''}
         ${poiListHtml(day.food, day.foodQueried ? 'Nothing tagged near the midpoint — worth checking the map for the next town.' : 'No eating preference selected — pick restaurants or groceries in the form to see options here.', 'food', day.endLabel)}
       </div>
       <div class="poi-col">
@@ -1474,7 +1560,9 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   const elevationAware = document.getElementById('elevationAware').checked;
   const wantRestaurant = getChecked('food').includes('restaurant');
   const wantGrocery = getChecked('food').includes('grocery');
+  const wantVegetarian = document.getElementById('vegetarianPref').checked;
   const lodgingTypes = getChecked('lodging');
+  const wantCamping = lodgingTypes.includes('camping');
 
   if(!surfaceInput){ showError('Pick a surface preference — paved, mixed, or gravel.'); return; }
   const surface = surfaceInput.value;
@@ -1534,9 +1622,9 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
       }
     });
 
-    setStatus('Splitting into riding days…');
+    setStatus(wantCamping ? 'Splitting into riding days (checking for campgrounds)…' : 'Splitting into riding days…');
     setProgress(45);
-    const rawDays = splitIntoDays(coords, cumKm, minMiles, maxMiles, elevationAware, forcedBreakIndices);
+    const rawDays = await splitIntoDays(coords, cumKm, minMiles, maxMiles, elevationAware, forcedBreakIndices, wantCamping);
 
     const trip = {
       startLabel: startCityName, endLabel: endCityName, viaLabels: viaCityNames,
@@ -1567,7 +1655,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
     // search anchor — falls back to the raw route point (below) when not available.
     let prevTownPoint = geocodedPoints[0];
     for(let i=0; i<rawDays.length; i++){
-      const { startIdx, endIdx } = rawDays[i];
+      const { startIdx, endIdx, noCampgroundFound } = rawDays[i];
       setStatus(`Finding stops for day ${i+1} of ${rawDays.length}…`);
       setProgress(45 + (i / rawDays.length) * 50);
 
@@ -1602,7 +1690,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
         const lodgingPoints = endTownPoint ? [endPt, endTownPoint] : [endPt];
 
         attractions = await findAttractions(attractionPoints, googleKey);
-        food = await findFood(midPt, wantRestaurant, wantGrocery, googleKey);
+        food = await findFood(midPt, wantRestaurant, wantGrocery, wantVegetarian, googleKey);
         lodging = await findLodging(lodgingPoints, lodgingTypes, googleKey);
       } catch(dayErr){
         console.warn(`Day ${i+1} lookups failed, continuing with partial data`, dayErr);
@@ -1617,7 +1705,8 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
         gainFt: elevationGainFt(coords, startIdx, endIdx),
         attractions, food, lodging,
         foodQueried: wantRestaurant || wantGrocery,
-        dayError
+        dayError,
+        noCampgroundFound: !!noCampgroundFound
       };
       rideDayNum++;
       renderDayCard(detailedDay, rideDayNum, coords, unit);
