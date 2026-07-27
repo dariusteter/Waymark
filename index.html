@@ -1545,10 +1545,23 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
       totalMiles, totalGainFt: elevationGainFt(coords, 0, coords.length-1)
     };
 
-    // Build detailed per-day info, including POI lookups + real town names for stops.
-    // Each day's lookups are wrapped so one bad day (a flaky Overpass response, etc.)
-    // doesn't take down the whole itinerary — it just renders with a small note instead.
-    const detailedDays = [];
+    // Show the results area now (still empty) so each day's card can appear as soon as it's
+    // ready, instead of everyone waiting for the whole trip to finish before seeing anything.
+    // The full-journey summary map renders last, once every day is in, since it needs the
+    // final total distance/elevation and reads better as a wrap-up than a lede.
+    document.getElementById('results').style.display = 'block';
+    let scrolledToResults = false;
+    function revealResultsOnce(){
+      if(scrolledToResults) return;
+      scrolledToResults = true;
+      document.getElementById('results').scrollIntoView({ behavior:'smooth', block:'start' });
+    }
+
+    // Build detailed per-day info, including POI lookups + real town names for stops, and
+    // render each day the moment it's ready. Each day's lookups are wrapped so one bad day
+    // (a flaky Overpass response, etc.) doesn't take down the whole itinerary — it just
+    // renders with a small note instead.
+    let rideDayNum = 0;
     let prevLabel = startCityName;
     // Carries the previous day's resolved town-center point forward as this day's "start"
     // search anchor — falls back to the raw route point (below) when not available.
@@ -1606,14 +1619,16 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
         foodQueried: wantRestaurant || wantGrocery,
         dayError
       };
-      detailedDays.push(detailedDay);
+      rideDayNum++;
+      renderDayCard(detailedDay, rideDayNum, coords, unit);
+      revealResultsOnce();
       prevLabel = endLabel;
       prevTownPoint = endTownPoint;
 
       const viaMeta = viaIndexMap.get(endIdx);
       if(viaMeta && viaMeta.restNights > 0){
         for(let r=0; r<viaMeta.restNights; r++){
-          detailedDays.push({
+          renderRestDayCard({
             isRestDay: true,
             townLabel: endLabel,
             attractions: detailedDay.attractions,
@@ -1624,20 +1639,12 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
       }
     }
 
-    setStatus('Drawing maps…');
+    setStatus('Drawing the full-journey map…');
     setProgress(100);
     stopLoadingQuips();
     document.getElementById('loading').style.display = 'none';
-    document.getElementById('results').style.display = 'block';
 
     renderTripSummary(trip, unit);
-    let rideDayNum = 0;
-    detailedDays.forEach((d) => {
-      if(d.isRestDay){ renderRestDayCard(d); }
-      else { rideDayNum++; renderDayCard(d, rideDayNum, coords, unit); }
-    });
-
-    document.getElementById('results').scrollIntoView({ behavior:'smooth', block:'start' });
 
   } catch(err){
     console.error(err);
