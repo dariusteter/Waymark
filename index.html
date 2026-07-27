@@ -1312,13 +1312,29 @@ async function findLodging(points, types, googleApiKey){
 }
 
 // ---- GPX export ----
-function coordsToGpx(coords, name){
+const GPX_SYM = { attraction: 'Scenic Area', food: 'Restaurant', lodging: 'Lodging' };
+
+// Flattens a day's sights/food/lodging POIs into a single tagged list for GPX waypoints.
+function poisToWaypoints(day){
+  const tag = (list, kind) => (list || []).filter(p => p && p.lat != null && p.lon != null).map(p => ({ ...p, kind }));
+  return [...tag(day.attractions, 'attraction'), ...tag(day.food, 'food'), ...tag(day.lodging, 'lodging')];
+}
+
+function coordsToGpx(coords, name, waypoints){
   const pts = coords.map(c =>
     `      <trkpt lat="${c[1]}" lon="${c[0]}"><ele>${(c[2]||0).toFixed(1)}</ele></trkpt>`
   ).join('\n');
+  // Waypoints must come before the <trk> element per the GPX 1.1 schema's element ordering.
+  const wpts = (waypoints || [])
+    .map(w => `  <wpt lat="${w.lat}" lon="${w.lon}">
+    <name>${esc(w.name)}</name>
+    <type>${esc(w.kind)}</type>
+    <sym>${esc(GPX_SYM[w.kind] || 'Waypoint')}</sym>
+  </wpt>`)
+    .join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Waymark" xmlns="http://www.topografix.com/GPX/1/1">
-  <trk>
+${wpts ? wpts + '\n' : ''}  <trk>
     <name>${esc(name)}</name>
     <trkseg>
 ${pts}
@@ -1489,7 +1505,7 @@ function renderTripSummary(trip, unit){
   map.fitBounds(line.getBounds(), { padding: [20,20] });
 
   document.getElementById('gpx-full-btn').addEventListener('click', () => {
-    downloadText('waymark-full-route.gpx', coordsToGpx(trip.coords, `${trip.startLabel} to ${trip.endLabel}`));
+    downloadText('waymark-full-route.gpx', coordsToGpx(trip.coords, `${trip.startLabel} to ${trip.endLabel}`, trip.pois));
   });
 }
 
@@ -1628,7 +1644,7 @@ function renderDayCard(day, dayNumber, coords, unit){
   document.getElementById(chartId).addEventListener('mouseleave', hideHoverDot);
 
   el.querySelector(`[data-gpx-uid="${uid}"]`).addEventListener('click', () => {
-    downloadText(`waymark-day-${dayNumber}.gpx`, coordsToGpx(dayCoords, `Day ${dayNumber}: ${day.startLabel} to ${day.endLabel}`));
+    downloadText(`waymark-day-${dayNumber}.gpx`, coordsToGpx(dayCoords, `Day ${dayNumber}: ${day.startLabel} to ${day.endLabel}`, poisToWaypoints(day)));
   });
 }
 
@@ -1731,7 +1747,8 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
       startLabel: startCityName, endLabel: endCityName, viaLabels: viaCityNames,
       viaPoints,
       coords, days: rawDays,
-      totalMiles, totalGainFt: elevationGainFt(coords, 0, coords.length-1)
+      totalMiles, totalGainFt: elevationGainFt(coords, 0, coords.length-1),
+      pois: [] // filled in as each day's sights/food/lodging are found, for the full-route GPX
     };
 
     // Show the results area now (still empty) so each day's card can appear as soon as it's
@@ -1809,6 +1826,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
         dayError,
         noCampgroundFound: !!noCampgroundFound
       };
+      trip.pois.push(...poisToWaypoints(detailedDay));
       rideDayNum++;
       renderDayCard(detailedDay, rideDayNum, coords, unit);
       revealResultsOnce();
