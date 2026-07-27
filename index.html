@@ -62,8 +62,12 @@
     background-image:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27240%27 height=%27140%27 viewBox=%270 0 240 140%27%3E%3Cg fill=%27%231F2A24%27 fill-opacity=%270.09%27%3E%3Crect x=%270%27 y=%2770%27 width=%2738%27 height=%2770%27/%3E%3Cpolygon points=%270,70 19,25 38,70%27/%3E%3Crect x=%2738%27 y=%2745%27 width=%2734%27 height=%2795%27/%3E%3Cpolygon points=%2738,45 55,10 72,45%27/%3E%3Crect x=%2780%27 y=%2780%27 width=%2722%27 height=%2760%27/%3E%3Crect x=%2787%27 y=%2720%27 width=%278%27 height=%2760%27/%3E%3Cpolygon points=%2787,20 91,5 95,20%27/%3E%3Crect x=%27102%27 y=%2760%27 width=%2742%27 height=%2780%27/%3E%3Cpolygon points=%27102,60 123,20 144,60%27/%3E%3Crect x=%27144%27 y=%2775%27 width=%2736%27 height=%2765%27/%3E%3Cpolygon points=%27144,75 162,40 180,75%27/%3E%3Crect x=%27157%27 y=%2755%27 width=%2710%27 height=%2714%27/%3E%3Cpolygon points=%27157,55 162,45 167,55%27/%3E%3Crect x=%27180%27 y=%2750%27 width=%2746%27 height=%2790%27/%3E%3Cpolygon points=%27180,50 203,10 226,50%27/%3E%3Crect x=%27226%27 y=%2790%27 width=%2714%27 height=%2750%27/%3E%3Cpolygon points=%27226,90 233,65 240,90%27/%3E%3C/g%3E%3C/svg%3E");
     background-repeat:repeat-x;
     background-position:top;
-    -webkit-mask-image:linear-gradient(to bottom, black 0%, black 40%, transparent 100%);
-    mask-image:linear-gradient(to bottom, black 0%, black 40%, transparent 100%);
+    /* White-to-transparent, not black-to-transparent: WebKit/Safari's mask-image defaults to
+       luminance masking, where black reads as 0% visible rather than "fully opaque." A black
+       gradient stop made the whole band evaluate to invisible in Safari. White is luminance 1
+       (visible) either way, so this fades correctly under both alpha- and luminance-mode masking. */
+    -webkit-mask-image:linear-gradient(to bottom, white 0%, white 40%, transparent 100%);
+    mask-image:linear-gradient(to bottom, white 0%, white 40%, transparent 100%);
   }
   .hero .eyebrow{
     font-family:'IBM Plex Mono', monospace;
