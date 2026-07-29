@@ -194,6 +194,21 @@
   .day-stats{ display:flex; gap:24px; margin:12px 0 18px; flex-wrap:wrap; }
   .day-stats .stat .num{ font-size:19px; }
 
+  .weather-row{ margin:14px 0; }
+  .weather-row-date{
+    font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase;
+    letter-spacing:0.08em; color:var(--moss); margin-bottom:6px;
+  }
+  .weather-row-date .hint{ display:inline; text-transform:none; letter-spacing:normal; font-family:inherit; }
+  .weather-chips{ display:flex; gap:10px; flex-wrap:wrap; }
+  .weather-chip{
+    display:flex; flex-direction:column; gap:2px; padding:8px 12px; border-radius:10px;
+    background:#F6F1E4; border:1px solid #e6dcc8; min-width:150px;
+  }
+  .weather-chip .wlabel{ font-size:11px; color:#6b5f52; }
+  .weather-chip .wvals{ font-family:'IBM Plex Mono',monospace; font-size:14px; color:var(--rust); }
+  .weather-chip .wvals-muted{ font-family:inherit; font-size:12px; color:#6b5f52; }
+
   .poi-cols{ display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin-top:18px; }
   @media (max-width:760px){ .poi-cols{ grid-template-columns:1fr; } }
   .poi-col h4{
@@ -487,6 +502,14 @@
         </fieldset>
 
         <fieldset>
+          <legend>Weather forecast</legend>
+          <div class="choice-group">
+            <label class="choice"><input type="checkbox" id="weatherPref">Show a forecast for each day</label>
+          </div>
+          <div class="hint">Assumes you set off tomorrow — shows the forecast high/low and chance of rain at that day's start and end towns. Forecasts only reach about two weeks out, so later days on a long tour may not have one yet.</div>
+        </fieldset>
+
+        <fieldset>
           <legend>Surface preference</legend>
           <div class="choice-group" id="surfaceGroup">
             <label class="choice"><input type="radio" name="surface" value="paved">Paved &amp; quiet roads</label>
@@ -566,6 +589,7 @@ const EUROPE_COUNTRY_CODES = 'ad,al,at,ba,be,bg,by,ch,cy,cz,de,dk,ee,es,fi,fo,fr
 const ORS_URL = 'https://api.openrouteservice.org/v2/directions';
 const BROUTER_URL = 'https://brouter.de/brouter';
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const OPEN_METEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
 const SURFACE_PROFILE = {
   paved: 'cycling-road',
@@ -592,6 +616,7 @@ const LODGING_TAGS = {
 // ---- session caches (avoid redundant network calls on retry/replan) ----
 const geocodeCache = new Map(); // lowercased place name -> array of Nominatim candidates
 const routeCache = new Map();   // profile + waypoint signature -> route coordinates
+const weatherCache = new Map(); // "lat,lon,unit" -> Open-Meteo daily forecast series (or null)
 
 // ---- units ----
 let currentUnit = 'imperial';
@@ -1311,6 +1336,62 @@ async function findLodging(points, types, googleApiKey){
   return dedupe(els.map(poiFromElement)).slice(0, 5);
 }
 
+// ---- Weather forecast (Open-Meteo, free/keyless — same provider already used for elevation) ----
+// Fetches once per location and caches the whole ~16-day daily series, since a town's start-of-day
+// and a neighboring day's end-of-day forecast are often the same coordinates on different dates —
+// one request covers every date we'll ever need to look up for that point.
+async function fetchWeatherSeries(lat, lon, unit){
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)},${unit}`;
+  if(weatherCache.has(key)) return weatherCache.get(key);
+  const tempUnit = unit === 'metric' ? 'celsius' : 'fahrenheit';
+  const url = `${OPEN_METEO_FORECAST_URL}?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&temperature_unit=${tempUnit}&forecast_days=16`;
+  let series = null;
+  try{
+    const res = await fetch(url);
+    if(res.ok){
+      const data = await res.json();
+      series = data.daily || null;
+    }
+  } catch(e){
+    console.warn('Weather forecast request failed', e);
+  }
+  weatherCache.set(key, series);
+  return series;
+}
+
+// Pulls the high/low/precipitation-chance for one specific date out of an already-fetched series.
+// Returns null if that date isn't in range (forecasts only reach ~16 days out).
+function weatherForDate(series, isoDate){
+  if(!series || !series.time) return null;
+  const idx = series.time.indexOf(isoDate);
+  if(idx === -1) return null;
+  const high = series.temperature_2m_max?.[idx];
+  const low = series.temperature_2m_min?.[idx];
+  if(high == null || low == null) return null;
+  return {
+    high, low,
+    precipChance: series.precipitation_probability_max ? series.precipitation_probability_max[idx] : null
+  };
+}
+
+async function fetchDayWeather(point, isoDate, unit){
+  const series = await fetchWeatherSeries(point.lat, point.lon, unit);
+  return weatherForDate(series, isoDate);
+}
+
+// Local calendar date (not UTC-shifted) for "today + N days", as YYYY-MM-DD -- matched against
+// Open-Meteo's own date strings, which are already in each location's local time (timezone=auto).
+function addDaysLocalISO(days){
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function formatForecastDate(isoDate){
+  const [y,m,d] = isoDate.split('-').map(Number);
+  return new Date(y, m-1, d).toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+}
+
 // ---- GPX export ----
 const GPX_SYM = { attraction: 'Scenic Area', food: 'Restaurant', lodging: 'Lodging' };
 
@@ -1373,6 +1454,7 @@ function buildShareURL(){
   if(surfaceInput) params.set('surface', surfaceInput.value);
   params.set('food', getChecked('food').join(','));
   params.set('veg', document.getElementById('vegetarianPref').checked ? '1' : '0');
+  params.set('weather', document.getElementById('weatherPref').checked ? '1' : '0');
   params.set('lodging', getChecked('lodging').join(','));
   params.set('budget', document.getElementById('budget').value);
   return `${location.origin}${location.pathname}?${params.toString()}`;
@@ -1424,6 +1506,11 @@ function prefillFromURL(){
     const vegInp = document.getElementById('vegetarianPref');
     vegInp.checked = params.get('veg') === '1';
     if(vegInp.checked) vegInp.closest('.choice').classList.add('active');
+  }
+  if(params.has('weather')){
+    const weatherInp = document.getElementById('weatherPref');
+    weatherInp.checked = params.get('weather') === '1';
+    if(weatherInp.checked) weatherInp.closest('.choice').classList.add('active');
   }
   (params.get('lodging') || '').split(',').filter(Boolean).forEach(v => {
     const inp = document.querySelector(`input[name="lodging"][value="${v}"]`);
@@ -1509,13 +1596,38 @@ function renderTripSummary(trip, unit){
   });
 }
 
-function renderRestDayCard(day){
+// One town/temperature reading, e.g. "Start · Riquewihr  18°/9°C · 20% rain".
+// Renders a graceful fallback when the forecast doesn't cover that date (Open-Meteo only
+// reaches ~16 days out, so later stops on a long tour may not have one yet).
+function weatherChipHtml(label, w, deg){
+  if(!w){
+    return `<div class="weather-chip"><span class="wlabel">${esc(label)}</span><span class="wvals wvals-muted">No forecast yet for this date</span></div>`;
+  }
+  const precip = w.precipChance != null ? ` · ${Math.round(w.precipChance)}% chance of rain` : '';
+  return `<div class="weather-chip"><span class="wlabel">${esc(label)}</span><span class="wvals">${Math.round(w.high)}°/${Math.round(w.low)}°${deg}${precip}</span></div>`;
+}
+
+// weather: { date, start, end } for a ride day, or { date, town } for a rest night.
+function weatherRowHtml(weather, unit, chips){
+  if(!weather) return '';
+  const deg = unit === 'metric' ? 'C' : 'F';
+  return `
+    <div class="weather-row">
+      <div class="weather-row-date">Forecast for ${esc(formatForecastDate(weather.date))} <span class="hint" style="margin:0;">(assumes you set off tomorrow)</span></div>
+      <div class="weather-chips">
+        ${chips.map(c => weatherChipHtml(c.label, c.w, deg)).join('')}
+      </div>
+    </div>`;
+}
+
+function renderRestDayCard(day, unit){
   const el = document.createElement('div');
   el.className = 'card day-card rest-day-card';
   el.innerHTML = `
     <div class="day-eyebrow"><span class="day-badge rest-day-badge">Rest day</span></div>
     <h3>${esc(day.townLabel)}</h3>
     <div class="hint" style="margin:-2px 0 14px;">An extra night here before continuing the ride — same nearby sights, food, and lodging as your arrival day.</div>
+    ${weatherRowHtml(day.weather, unit, [{ label: day.townLabel, w: day.weather && day.weather.town }])}
     <div class="poi-cols">
       <div class="poi-col">
         <h4>Sights nearby</h4>
@@ -1554,6 +1666,10 @@ function renderDayCard(day, dayNumber, coords, unit){
       <div class="stat"><div class="num">${elevDisplay(day.gainFt, unit)}</div><div class="lbl">${esc(elevLbl)} climbed</div></div>
     </div>
     <div class="map-frame small" id="${mapId}"></div>
+    ${weatherRowHtml(day.weather, unit, [
+      { label: `Start · ${day.startLabel}`, w: day.weather && day.weather.start },
+      { label: `Finish · ${day.endLabel}`, w: day.weather && day.weather.end }
+    ])}
     <div class="elevation-chart"><canvas id="${chartId}"></canvas></div>
     <div class="poi-cols">
       <div class="poi-col">
@@ -1680,6 +1796,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   const wantVegetarian = document.getElementById('vegetarianPref').checked;
   const lodgingTypes = getChecked('lodging');
   const wantCamping = lodgingTypes.includes('camping');
+  const wantWeather = document.getElementById('weatherPref').checked;
 
   if(!surfaceInput){ showError('Pick a surface preference — paved, mixed, or gravel.'); return; }
   const surface = surfaceInput.value;
@@ -1768,6 +1885,9 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
     // (a flaky Overpass response, etc.) doesn't take down the whole itinerary — it just
     // renders with a small note instead.
     let rideDayNum = 0;
+    // Advances by one for every calendar day rendered (ride days AND rest nights alike), so
+    // "Day 1" lines up with tomorrow and later days/rest nights land on the right later dates.
+    let calendarDayOffset = 0;
     let prevLabel = startCityName;
     // Carries the previous day's resolved town-center point forward as this day's "start"
     // search anchor — falls back to the raw route point (below) when not available.
@@ -1780,6 +1900,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
       let endLabel = endCityName;
       let endTownPoint = null;
       let attractions = [], food = [], lodging = [];
+      let weather = null;
       let dayError = false;
       try{
         const startPt = prevTownPoint || { lat: coords[startIdx][1], lon: coords[startIdx][0] };
@@ -1810,6 +1931,15 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
         attractions = await findAttractions(attractionPoints, googleKey);
         food = await findFood(midPt, wantRestaurant, wantGrocery, wantVegetarian, googleKey);
         lodging = await findLodging(lodgingPoints, lodgingTypes, googleKey);
+
+        if(wantWeather){
+          const dateStr = addDaysLocalISO(1 + calendarDayOffset);
+          const [startW, endW] = await Promise.all([
+            fetchDayWeather(startPt, dateStr, unit),
+            fetchDayWeather(endPt, dateStr, unit)
+          ]);
+          weather = { date: dateStr, start: startW, end: endW };
+        }
       } catch(dayErr){
         console.warn(`Day ${i+1} lookups failed, continuing with partial data`, dayErr);
         dayError = true;
@@ -1821,13 +1951,14 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
         endLabel,
         miles: (cumKm[endIdx]-cumKm[startIdx]) * MI_PER_KM,
         gainFt: elevationGainFt(coords, startIdx, endIdx),
-        attractions, food, lodging,
+        attractions, food, lodging, weather,
         foodQueried: wantRestaurant || wantGrocery,
         dayError,
         noCampgroundFound: !!noCampgroundFound
       };
       trip.pois.push(...poisToWaypoints(detailedDay));
       rideDayNum++;
+      calendarDayOffset++;
       renderDayCard(detailedDay, rideDayNum, coords, unit);
       revealResultsOnce();
       prevLabel = endLabel;
@@ -1836,13 +1967,25 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
       const viaMeta = viaIndexMap.get(endIdx);
       if(viaMeta && viaMeta.restNights > 0){
         for(let r=0; r<viaMeta.restNights; r++){
+          let restWeather = null;
+          if(wantWeather){
+            try{
+              const restPt = endTownPoint || { lat: coords[endIdx][1], lon: coords[endIdx][0] };
+              const dateStr = addDaysLocalISO(1 + calendarDayOffset);
+              restWeather = { date: dateStr, town: await fetchDayWeather(restPt, dateStr, unit) };
+            } catch(restWeatherErr){
+              console.warn('Rest-day weather lookup failed', restWeatherErr);
+            }
+          }
+          calendarDayOffset++;
           renderRestDayCard({
             isRestDay: true,
             townLabel: endLabel,
             attractions: detailedDay.attractions,
             food: detailedDay.food,
-            lodging: detailedDay.lodging
-          });
+            lodging: detailedDay.lodging,
+            weather: restWeather
+          }, unit);
         }
       }
     }
