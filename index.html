@@ -958,9 +958,16 @@ async function getRoute(waypoints, surface){
   try{
     return await getRouteBRouter(waypoints, BROUTER_PROFILE[surface]);
   } catch(brouterErr){
-    console.warn('BRouter routing failed, falling back to OpenRouteService', brouterErr);
+    // BRouter occasionally gives up on a tricky leg -- that's expected and the OpenRouteService
+    // fallback below silently handles it most of the time, so only log a warning if the backup
+    // router *also* fails, rather than every time BRouter alone has a hiccup.
     setStatus('Free router unavailable — retrying with backup router…');
-    return await getRouteORS(waypoints, SURFACE_PROFILE[surface], ORS_API_KEY);
+    try{
+      return await getRouteORS(waypoints, SURFACE_PROFILE[surface], ORS_API_KEY);
+    } catch(orsErr){
+      console.warn('Both BRouter and the OpenRouteService fallback failed for this leg', { brouterErr, orsErr });
+      throw orsErr;
+    }
   }
 }
 
@@ -1218,8 +1225,13 @@ async function findPlacesGoogle(point, includedTypes, radiusMeters, apiKey){
 }
 
 // ---- Overpass POI lookups ----
+// The shared public Overpass instance is free but rate-limited and occasionally slow under load,
+// so 429s and 504s are routine, not failures -- OVERPASS_BACKOFF_MS gives it more room to recover
+// (longer waits, one extra attempt) before giving up and returning an empty result.
+const OVERPASS_BACKOFF_MS = [500, 1500, 3000, 5000];
+const OVERPASS_MAX_ATTEMPT = OVERPASS_BACKOFF_MS.length - 1;
 async function overpassQuery(ql, attempt = 0){
-  await sleep(attempt === 0 ? 500 : 1000 * attempt); // be polite to the shared public endpoint; back off on retry
+  await sleep(OVERPASS_BACKOFF_MS[Math.min(attempt, OVERPASS_MAX_ATTEMPT)]);
   let res;
   try{
     res = await fetch(OVERPASS_URL, {
@@ -1228,12 +1240,12 @@ async function overpassQuery(ql, attempt = 0){
       body: 'data=' + encodeURIComponent(ql)
     });
   } catch(e){
-    if(attempt < 2) return overpassQuery(ql, attempt + 1);
+    if(attempt < OVERPASS_MAX_ATTEMPT) return overpassQuery(ql, attempt + 1);
     console.warn('Overpass query failed (network)', e);
     return [];
   }
   if(!res.ok){
-    if((res.status === 429 || res.status === 504) && attempt < 2){
+    if((res.status === 429 || res.status === 504) && attempt < OVERPASS_MAX_ATTEMPT){
       return overpassQuery(ql, attempt + 1);
     }
     console.warn('Overpass query failed', res.status);
