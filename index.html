@@ -223,6 +223,13 @@
   .poi-links{ font-size:11.5px; }
   .poi-sub-link{ color:var(--moss); border-bottom-color:rgba(62,98,89,0.35); }
   .poi-empty{ color:#8a7d6c; font-style:italic; font-size:13px; }
+  .poi-color-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; flex-shrink:0; }
+  .poi-col li[data-poi-key]{ cursor:pointer; border-radius:4px; transition:background-color 0.15s; }
+  .poi-col li[data-poi-key]:hover, .poi-col li.poi-row-active{ background:rgba(62,98,89,0.08); }
+
+  .map-legend{ display:flex; gap:14px; flex-wrap:wrap; margin:8px 0 2px; }
+  .legend-item{ display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#6b5f52; }
+  .legend-dot{ display:inline-block; width:9px; height:9px; border-radius:50%; flex-shrink:0; }
 
   .elevation-chart{ margin-top:18px; height:130px; }
 
@@ -1248,12 +1255,22 @@ function poiFromElement(el){
   if(tags.website) link = tags.website;
   else if(tags['contact:website']) link = tags['contact:website'];
   else if(tags.wikipedia){
+    // OSM's wikipedia tag can point to any language edition (e.g. "de:Schloss Lichtenstein").
+    // Forcing every link to en.wikipedia.org sent people to an English article that often
+    // doesn't exist for sights that are only documented in their local language, landing on a
+    // blank page. Respect whatever language the tag actually specifies; default to English only
+    // when no language prefix is given at all.
     const parts = tags.wikipedia.split(':');
+    const lang = parts.length > 1 ? parts[0] : 'en';
     const title = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
-    link = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g,'_'))}`;
+    link = `https://${encodeURIComponent(lang)}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g,'_'))}`;
+  } else if(tags.wikidata){
+    // No Wikipedia article tagged, but a Wikidata item still gives a real reference page
+    // (language-independent) rather than falling straight through to a generic map search.
+    link = `https://www.wikidata.org/wiki/${encodeURIComponent(tags.wikidata)}`;
   } else {
-    // No dedicated website or wikipedia entry — send them to Google Maps instead of an
-    // OpenStreetMap node page, so every link the user clicks lands on an actual map.
+    // No dedicated website, Wikipedia, or Wikidata entry — send them to Google Maps instead of
+    // an OpenStreetMap node page, so every link the user clicks lands on an actual map.
     link = gmapsLink;
   }
   const bookingLink = `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(name)}`;
@@ -1283,15 +1300,32 @@ const MAJOR_HISTORIC_TYPES = 'castle|fort|fortress|palace|monastery|ruins|archae
 const MAJOR_MIN_RATING = 4.0;
 const MAJOR_MIN_RATING_COUNT = 15;
 
+// Collapses points that are within `minKm` of one another so a short/looping day doesn't fire
+// off duplicate Places calls for essentially the same spot.
+function dedupeNearbyPoints(points, minKm){
+  const kept = [];
+  for(const p of points){
+    if(!kept.some(k => haversineKm(k.lon, k.lat, p.lon, p.lat) < minKm)) kept.push(p);
+  }
+  return kept;
+}
+
 async function findAttractions(points, googleApiKey, sightPref){
   const wantMajorOnly = sightPref !== 'all';
   if(googleApiKey){
-    const mid = points[Math.floor(points.length/2)];
-    const gr = await findPlacesGoogle(mid, ['tourist_attraction', 'museum', 'historical_landmark', 'park', 'natural_feature'], 8000, googleApiKey);
-    if(gr && gr.length){
+    // Query around every distinct point along the day (start, midpoint, end, destination town)
+    // instead of collapsing to a single representative circle -- a landmark right at the start
+    // of the day, or one sitting in the destination town itself, previously fell outside the one
+    // 8km circle centered on the day's midpoint and never showed up at all.
+    const queryPoints = dedupeNearbyPoints(points, 2);
+    const results = await Promise.all(queryPoints.map(p =>
+      findPlacesGoogle(p, ['tourist_attraction', 'museum', 'historical_landmark', 'park', 'natural_feature'], 5000, googleApiKey)
+    ));
+    const merged = dedupe(results.flat().filter(Boolean));
+    if(merged.length){
       // Highest-rated first regardless of mode -- there's no downside to surfacing the better
       // sight first even when the user is fine seeing everything.
-      const sorted = [...gr].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
+      const sorted = [...merged].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
       if(!wantMajorOnly) return sorted.slice(0, 5);
       const strong = sorted.filter(p => (p.rating ?? 0) >= MAJOR_MIN_RATING && (p.userRatingCount ?? 0) >= MAJOR_MIN_RATING_COUNT);
       // If nothing clears the bar (sparse coverage in a small town), fall back to whatever's
@@ -1571,6 +1605,17 @@ function prefillFromURL(){
 }
 
 // ---- Rendering ----
+// Shared color per POI category, used for both the small dot next to each listed place and its
+// matching waypoint marker on the map, so the two are visually tied together at a glance.
+const POI_COLORS = { attraction: '#3E6259', food: '#D69A2D', lodging: '#3B6B87' };
+
+// A stable key for pairing a POI's list entry with its map marker (used for the hover-to-highlight
+// wiring in renderDayCard). Lat/lon plus category is unique enough in practice; POIs without
+// coordinates simply get no key and no hover behavior.
+function poiKey(kind, p){
+  return (p && p.lat != null && p.lon != null) ? `${kind}:${p.lat},${p.lon}` : null;
+}
+
 function poiListHtml(pois, emptyMsg, kind, townName){
   if(!pois.length){
     const q = encodeURIComponent(kind === 'lodging' ? `hotels in ${townName}` : `${kind === 'food' ? 'restaurants' : 'things to do'} in ${townName}`);
@@ -1590,7 +1635,9 @@ function poiListHtml(pois, emptyMsg, kind, townName){
     const extraLinks = kind === 'lodging'
       ? ` <a class="poi-sub-link" href="${esc(p.gmapsLink)}" target="_blank" rel="noopener">map</a> · <a class="poi-sub-link" href="${esc(p.bookingLink)}" target="_blank" rel="noopener">price on Booking.com</a>`
       : ` <a class="poi-sub-link" href="${esc(p.gmapsLink)}" target="_blank" rel="noopener">map</a>`;
-    return `<li><a href="${esc(p.link)}" target="_blank" rel="noopener">${esc(p.name)}</a>${ratingHtml}${phoneHtml}<br><span class="poi-links">${extraLinks}</span></li>`;
+    const key = poiKey(kind, p);
+    const dotHtml = `<span class="poi-color-dot" style="background:${POI_COLORS[kind] || '#999'}"></span>`;
+    return `<li${key ? ` data-poi-key="${esc(key)}"` : ''}>${dotHtml}<a href="${esc(p.link)}" target="_blank" rel="noopener">${esc(p.name)}</a>${ratingHtml}${phoneHtml}<br><span class="poi-links">${extraLinks}</span></li>`;
   }).join('')}</ul>`;
 }
 
@@ -1720,6 +1767,11 @@ function renderDayCard(day, dayNumber, coords, unit){
       <div class="stat"><div class="num">${elevDisplay(day.gainFt, unit)}</div><div class="lbl">${esc(elevLbl)} climbed</div></div>
     </div>
     <div class="map-frame small" id="${mapId}"></div>
+    <div class="map-legend">
+      <span class="legend-item"><span class="legend-dot" style="background:${POI_COLORS.attraction}"></span>Sights</span>
+      <span class="legend-item"><span class="legend-dot" style="background:${POI_COLORS.food}"></span>Food</span>
+      <span class="legend-item"><span class="legend-dot" style="background:${POI_COLORS.lodging}"></span>Stay</span>
+    </div>
     ${weatherRowHtml(day.weather, unit, [
       { label: `Start · ${day.startLabel}`, w: day.weather && day.weather.start },
       { label: `Finish · ${day.endLabel}`, w: day.weather && day.weather.end }
@@ -1755,10 +1807,37 @@ function renderDayCard(day, dayNumber, coords, unit){
   const line = L.polyline(latlngs, { color: '#C0602A', weight: 4 }).addTo(map);
   L.marker(latlngs[0]).addTo(map).bindPopup('Start');
   L.marker(latlngs[latlngs.length-1]).addTo(map).bindPopup('End of day');
-  [...day.attractions, ...day.food, ...day.lodging].forEach(p => {
-    if(p.lat && p.lon) L.circleMarker([p.lat, p.lon], { radius:5, color:'#3E6259', fillColor:'#3E6259', fillOpacity:0.9 })
-      .addTo(map).bindPopup(esc(p.name));
+
+  // Waypoint markers, colored by category (sights/food/stay) to match the legend and the list
+  // below, and kept in a lookup so hovering a place's name in that list can "light up" its marker.
+  const poiMarkers = new Map();
+  [['attraction', day.attractions], ['food', day.food], ['lodging', day.lodging]].forEach(([kind, list]) => {
+    const color = POI_COLORS[kind];
+    (list || []).forEach(p => {
+      if(p.lat == null || p.lon == null) return;
+      const marker = L.circleMarker([p.lat, p.lon], { radius:5, weight:1, color, fillColor:color, fillOpacity:0.9 })
+        .addTo(map).bindPopup(esc(p.name));
+      const key = poiKey(kind, p);
+      if(key) poiMarkers.set(key, { marker, color });
+    });
   });
+  function highlightPoiMarker(key){
+    const entry = poiMarkers.get(key);
+    if(!entry) return;
+    entry.marker.setStyle({ radius: 9, weight: 3, color: '#fff' });
+    if(entry.marker.bringToFront) entry.marker.bringToFront();
+  }
+  function resetPoiMarker(key){
+    const entry = poiMarkers.get(key);
+    if(!entry) return;
+    entry.marker.setStyle({ radius: 5, weight: 1, color: entry.color });
+  }
+  el.querySelectorAll('.poi-col li[data-poi-key]').forEach(li => {
+    const key = li.dataset.poiKey;
+    li.addEventListener('mouseenter', () => highlightPoiMarker(key));
+    li.addEventListener('mouseleave', () => resetPoiMarker(key));
+  });
+
   map.fitBounds(line.getBounds(), { padding: [16,16] });
 
   // hover dot: shown on the map at the point under the cursor on the elevation profile
