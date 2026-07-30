@@ -1450,23 +1450,37 @@ async function findLodging(points, types, googleApiKey){
 // Fetches once per location and caches the whole ~16-day daily series, since a town's start-of-day
 // and a neighboring day's end-of-day forecast are often the same coordinates on different dates —
 // one request covers every date we'll ever need to look up for that point.
-async function fetchWeatherSeries(lat, lon, unit){
+async function fetchWeatherSeries(lat, lon, unit, attempt){
+  attempt = attempt || 0;
   const key = `${lat.toFixed(2)},${lon.toFixed(2)},${unit}`;
   if(weatherCache.has(key)) return weatherCache.get(key);
   const tempUnit = unit === 'metric' ? 'celsius' : 'fahrenheit';
   const url = `${OPEN_METEO_FORECAST_URL}?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&temperature_unit=${tempUnit}&forecast_days=16`;
-  let series = null;
+  // Weather shares Open-Meteo's elevation endpoint's rate limit, but previously had no retry at
+  // all -- a single 429 permanently cached a null result for that town for the rest of the
+  // session (e.g. every remaining day that also touched that location). Retry with backoff like
+  // elevation/Overpass do, and only cache once we're actually done trying.
   try{
     const res = await fetch(url);
     if(res.ok){
       const data = await res.json();
-      series = data.daily || null;
+      const series = data.daily || null;
+      weatherCache.set(key, series);
+      return series;
+    }
+    if(attempt < 3){
+      await sleep(800 * (attempt + 1));
+      return fetchWeatherSeries(lat, lon, unit, attempt + 1);
     }
   } catch(e){
+    if(attempt < 3){
+      await sleep(800 * (attempt + 1));
+      return fetchWeatherSeries(lat, lon, unit, attempt + 1);
+    }
     console.warn('Weather forecast request failed', e);
   }
-  weatherCache.set(key, series);
-  return series;
+  weatherCache.set(key, null); // give up after 4 attempts total, same budget as elevation
+  return null;
 }
 
 // Pulls the high/low/precipitation-chance for one specific date out of an already-fetched series.
@@ -2003,7 +2017,15 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
     // of the FULL-resolution route geometry — the map, GPX, and day-splitting all use the
     // real road/path shape the router returned, not a thinned-out approximation of it.
     const cumKmRaw = cumulativeDistancesKm(rawCoords);
-    const sampleIdxs = resampleIndices(rawCoords, cumKmRaw, 0.6); // one elevation query point every ~0.6km
+    // Fixed 0.6km spacing works fine for a normal few-hundred-km tour, but scales linearly with
+    // route length -- a long point-to-point trip (Paris-Nice is ~950km) could generate 1,500+
+    // elevation query points and enough batches to trip Open-Meteo's rate limit. Widen the spacing
+    // as needed to keep the total sample count bounded, while never going coarser than necessary
+    // for shorter routes.
+    const totalRouteKm = cumKmRaw[cumKmRaw.length - 1];
+    const MAX_ELEVATION_SAMPLES = 700;
+    const spacingKm = Math.max(0.6, totalRouteKm / MAX_ELEVATION_SAMPLES);
+    const sampleIdxs = resampleIndices(rawCoords, cumKmRaw, spacingKm);
     const samplePoints = sampleIdxs.map(idx => ({ lon: rawCoords[idx][0], lat: rawCoords[idx][1] }));
     const sampleElevations = await fetchElevations(samplePoints);
     const pointElevations = interpolateElevations(rawCoords.length, sampleIdxs, sampleElevations);
