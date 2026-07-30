@@ -219,6 +219,7 @@
   .poi-col li{ margin-bottom:9px; padding-left:14px; position:relative; }
   .poi-col li::before{ content:"–"; position:absolute; left:0; color:var(--leather); }
   .poi-phone{ color:#6b5f52; font-size:12px; }
+  .poi-rating{ color:var(--rust); font-size:12px; font-family:'IBM Plex Mono',monospace; }
   .poi-links{ font-size:11.5px; }
   .poi-sub-link{ color:var(--moss); border-bottom-color:rgba(62,98,89,0.35); }
   .poi-empty{ color:#8a7d6c; font-style:italic; font-size:13px; }
@@ -517,6 +518,15 @@
             <label class="choice"><input type="radio" name="surface" value="gravel">Gravel &amp; dirt</label>
           </div>
           <div class="hint">This chooses the routing profile — road-bike, mountain-bike, or a blend.</div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Sightseeing</legend>
+          <div class="choice-group" id="sightGroup">
+            <label class="choice active"><input type="radio" name="sightPref" value="major" checked>Major landmarks only</label>
+            <label class="choice"><input type="radio" name="sightPref" value="all">Include local curiosities too</label>
+          </div>
+          <div class="hint">"Major landmarks only" favors well-known, highly-rated sights (castles, museums, notable viewpoints) over roadside memorials and minor plaques. "Include local curiosities" shows everything tagged nearby, even lightly-documented spots.</div>
         </fieldset>
 
         <fieldset>
@@ -1153,7 +1163,10 @@ const GOOGLE_LODGING_TYPES = {
   guest_house: ['guest_house', 'bed_and_breakfast'],
   hotel: ['hotel', 'motel', 'resort_hotel', 'extended_stay_hotel']
 };
-const GOOGLE_FIELD_MASK = 'places.displayName,places.formattedAddress,places.location,places.internationalPhoneNumber,places.websiteUri,places.googleMapsUri';
+// rating/userRatingCount are already billed at the same Enterprise SKU tier as the phone/website
+// fields below, so adding them here doesn't change the cost of a Places call — it just lets us
+// tell a genuinely popular landmark apart from a barely-documented roadside tag.
+const GOOGLE_FIELD_MASK = 'places.displayName,places.formattedAddress,places.location,places.internationalPhoneNumber,places.websiteUri,places.googleMapsUri,places.rating,places.userRatingCount';
 
 async function findPlacesGoogle(point, includedTypes, radiusMeters, apiKey){
   if(!apiKey || !includedTypes.length) return null; // null = "didn't try" so callers know to fall back to OSM
@@ -1186,7 +1199,9 @@ async function findPlacesGoogle(point, includedTypes, radiusMeters, apiKey){
         phone: p.internationalPhoneNumber || null,
         lat: p.location?.latitude, lon: p.location?.longitude,
         gmapsLink,
-        bookingLink: `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(name)}`
+        bookingLink: `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(name)}`,
+        rating: typeof p.rating === 'number' ? p.rating : null,
+        userRatingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : null
       };
     });
   } catch(e){
@@ -1256,16 +1271,42 @@ function dedupe(list){
   });
 }
 
-async function findAttractions(points, googleApiKey){
+// "Major landmarks only" mode: OSM's bare `historic` tag covers everything from a national
+// monument to a roadside memorial plaque with equal weight, which is why unfiltered results mix
+// castles in with wayside crosses. This allowlist keeps only historic *types* that are usually
+// worth an actual stop; "Include local curiosities" skips it and matches any historic=* tag.
+const MAJOR_HISTORIC_TYPES = 'castle|fort|fortress|palace|monastery|ruins|archaeological_site|city_gate|citadel|tower|manor';
+
+// Minimum rating signal for "major landmarks only" mode on the Google Places path. Requiring a
+// review count too avoids a single 5-star rating (from one visitor) outranking a well-established
+// but slightly-lower-rated site.
+const MAJOR_MIN_RATING = 4.0;
+const MAJOR_MIN_RATING_COUNT = 15;
+
+async function findAttractions(points, googleApiKey, sightPref){
+  const wantMajorOnly = sightPref !== 'all';
   if(googleApiKey){
     const mid = points[Math.floor(points.length/2)];
     const gr = await findPlacesGoogle(mid, ['tourist_attraction', 'museum', 'historical_landmark', 'park', 'natural_feature'], 8000, googleApiKey);
-    if(gr && gr.length) return gr.slice(0, 5);
+    if(gr && gr.length){
+      // Highest-rated first regardless of mode -- there's no downside to surfacing the better
+      // sight first even when the user is fine seeing everything.
+      const sorted = [...gr].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
+      if(!wantMajorOnly) return sorted.slice(0, 5);
+      const strong = sorted.filter(p => (p.rating ?? 0) >= MAJOR_MIN_RATING && (p.userRatingCount ?? 0) >= MAJOR_MIN_RATING_COUNT);
+      // If nothing clears the bar (sparse coverage in a small town), fall back to whatever's
+      // available rather than leaving the day with no sights at all.
+      return (strong.length ? strong : sorted).slice(0, 5);
+    }
   }
-  const clauses = points.map(p =>
-    `node["tourism"="attraction"](around:3000,${p.lat},${p.lon});
+  const historicClause = wantMajorOnly
+    ? `node["historic"~"${MAJOR_HISTORIC_TYPES}"](around:3000,LATLON);
+       way["historic"~"${MAJOR_HISTORIC_TYPES}"](around:3000,LATLON);`
+    : `node["historic"](around:3000,LATLON);`;
+  const clauses = points.map(p => `
+     node["tourism"="attraction"](around:3000,${p.lat},${p.lon});
      way["tourism"="attraction"](around:3000,${p.lat},${p.lon});
-     node["historic"](around:3000,${p.lat},${p.lon});
+     ${historicClause.replace(/LATLON/g, `${p.lat},${p.lon}`)}
      node["tourism"="viewpoint"](around:3000,${p.lat},${p.lon});
      node["natural"~"waterfall|peak"](around:3000,${p.lat},${p.lon});`
   ).join('\n');
@@ -1452,6 +1493,8 @@ function buildShareURL(){
   params.set('elev', document.getElementById('elevationAware').checked ? '1' : '0');
   const surfaceInput = document.querySelector('input[name="surface"]:checked');
   if(surfaceInput) params.set('surface', surfaceInput.value);
+  const sightShareInput = document.querySelector('input[name="sightPref"]:checked');
+  if(sightShareInput) params.set('sight', sightShareInput.value);
   params.set('food', getChecked('food').join(','));
   params.set('veg', document.getElementById('vegetarianPref').checked ? '1' : '0');
   params.set('weather', document.getElementById('weatherPref').checked ? '1' : '0');
@@ -1498,6 +1541,14 @@ function prefillFromURL(){
     const inp = document.querySelector(`input[name="surface"][value="${params.get('surface')}"]`);
     if(inp){ inp.checked = true; inp.closest('.choice').classList.add('active'); }
   }
+  if(params.has('sight')){
+    const inp = document.querySelector(`input[name="sightPref"][value="${params.get('sight')}"]`);
+    if(inp){
+      document.querySelectorAll('#sightGroup .choice').forEach(l => l.classList.remove('active'));
+      inp.checked = true;
+      inp.closest('.choice').classList.add('active');
+    }
+  }
   (params.get('food') || '').split(',').filter(Boolean).forEach(v => {
     const inp = document.querySelector(`input[name="food"][value="${v}"]`);
     if(inp){ inp.checked = true; inp.closest('.choice').classList.add('active'); }
@@ -1533,10 +1584,13 @@ function poiListHtml(pois, emptyMsg, kind, townName){
   }
   return `<ul>${pois.map(p => {
     const phoneHtml = p.phone ? ` <span class="poi-phone">· ${esc(p.phone)}</span>` : '';
+    const ratingHtml = (kind === 'attraction' && typeof p.rating === 'number')
+      ? ` <span class="poi-rating">★ ${p.rating.toFixed(1)}${p.userRatingCount ? ` (${p.userRatingCount})` : ''}</span>`
+      : '';
     const extraLinks = kind === 'lodging'
       ? ` <a class="poi-sub-link" href="${esc(p.gmapsLink)}" target="_blank" rel="noopener">map</a> · <a class="poi-sub-link" href="${esc(p.bookingLink)}" target="_blank" rel="noopener">price on Booking.com</a>`
       : ` <a class="poi-sub-link" href="${esc(p.gmapsLink)}" target="_blank" rel="noopener">map</a>`;
-    return `<li><a href="${esc(p.link)}" target="_blank" rel="noopener">${esc(p.name)}</a>${phoneHtml}<br><span class="poi-links">${extraLinks}</span></li>`;
+    return `<li><a href="${esc(p.link)}" target="_blank" rel="noopener">${esc(p.name)}</a>${ratingHtml}${phoneHtml}<br><span class="poi-links">${extraLinks}</span></li>`;
   }).join('')}</ul>`;
 }
 
@@ -1797,6 +1851,8 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
   const lodgingTypes = getChecked('lodging');
   const wantCamping = lodgingTypes.includes('camping');
   const wantWeather = document.getElementById('weatherPref').checked;
+  const sightInput = document.querySelector('input[name="sightPref"]:checked');
+  const sightPref = sightInput ? sightInput.value : 'major';
 
   if(!surfaceInput){ showError('Pick a surface preference — paved, mixed, or gravel.'); return; }
   const surface = surfaceInput.value;
@@ -1928,7 +1984,7 @@ document.getElementById('trip-form').addEventListener('submit', async (e) => {
         if(endTownPoint) attractionPoints.push(endTownPoint);
         const lodgingPoints = endTownPoint ? [endPt, endTownPoint] : [endPt];
 
-        attractions = await findAttractions(attractionPoints, googleKey);
+        attractions = await findAttractions(attractionPoints, googleKey, sightPref);
         food = await findFood(midPt, wantRestaurant, wantGrocery, wantVegetarian, googleKey);
         lodging = await findLodging(lodgingPoints, lodgingTypes, googleKey);
 
