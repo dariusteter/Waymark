@@ -1337,9 +1337,19 @@ async function findAttractions(points, googleApiKey, sightPref){
     ? `node["historic"~"${MAJOR_HISTORIC_TYPES}"](around:3000,LATLON);
        way["historic"~"${MAJOR_HISTORIC_TYPES}"](around:3000,LATLON);`
     : `node["historic"](around:3000,LATLON);`;
+  // `tourism=attraction` turns out to be a much noisier tag than the historic one: town-run OSM
+  // imports often mark every named decorative fountain, sculpture, or plaque in a pedestrian zone
+  // as an "attraction" too. A Wikidata tag doesn't help discriminate here -- German municipalities
+  // have bulk-imported Wikidata items for entire heritage-object registers, fountains included --
+  // but an actual `wikipedia` tag (a real, curated article) is a much higher and more reliable bar,
+  // so major mode requires one for this tag specifically.
+  const attractionClause = wantMajorOnly
+    ? `node["tourism"="attraction"]["wikipedia"](around:3000,LATLON);
+       way["tourism"="attraction"]["wikipedia"](around:3000,LATLON);`
+    : `node["tourism"="attraction"](around:3000,LATLON);
+       way["tourism"="attraction"](around:3000,LATLON);`;
   const clauses = points.map(p => `
-     node["tourism"="attraction"](around:3000,${p.lat},${p.lon});
-     way["tourism"="attraction"](around:3000,${p.lat},${p.lon});
+     ${attractionClause.replace(/LATLON/g, `${p.lat},${p.lon}`)}
      ${historicClause.replace(/LATLON/g, `${p.lat},${p.lon}`)}
      node["tourism"="viewpoint"](around:3000,${p.lat},${p.lon});
      node["natural"~"waterfall|peak"](around:3000,${p.lat},${p.lon});`
