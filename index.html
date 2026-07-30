@@ -1319,7 +1319,12 @@ async function findAttractions(points, googleApiKey, sightPref){
     // 8km circle centered on the day's midpoint and never showed up at all.
     const queryPoints = dedupeNearbyPoints(points, 2);
     const results = await Promise.all(queryPoints.map(p =>
-      findPlacesGoogle(p, ['tourist_attraction', 'museum', 'historical_landmark', 'park', 'natural_feature'], 5000, googleApiKey)
+      // 'natural_feature' was a legacy Places API type that was never valid in Places API (New)'s
+      // Table A. Nearby Search rejects the *entire* request with a 400 if any included type is
+      // invalid, so this one bad value was silently failing every single attraction search and
+      // forcing a fall-through to the unranked OSM path -- confirmed via the exact error text:
+      // {"code":400,"message":"Unsupported types: natural_feature.","status":"INVALID_ARGUMENT"}
+      findPlacesGoogle(p, ['tourist_attraction', 'museum', 'historical_landmark', 'park'], 5000, googleApiKey)
     ));
     const merged = dedupe(results.flat().filter(Boolean));
     if(merged.length){
@@ -1337,9 +1342,19 @@ async function findAttractions(points, googleApiKey, sightPref){
     ? `node["historic"~"${MAJOR_HISTORIC_TYPES}"](around:3000,LATLON);
        way["historic"~"${MAJOR_HISTORIC_TYPES}"](around:3000,LATLON);`
     : `node["historic"](around:3000,LATLON);`;
+  // `tourism=attraction` turns out to be a much noisier tag than the historic one: town-run OSM
+  // imports often mark every named decorative fountain, sculpture, or plaque in a pedestrian zone
+  // as an "attraction" too. A Wikidata tag doesn't help discriminate here -- German municipalities
+  // have bulk-imported Wikidata items for entire heritage-object registers, fountains included --
+  // but an actual `wikipedia` tag (a real, curated article) is a much higher and more reliable bar,
+  // so major mode requires one for this tag specifically.
+  const attractionClause = wantMajorOnly
+    ? `node["tourism"="attraction"]["wikipedia"](around:3000,LATLON);
+       way["tourism"="attraction"]["wikipedia"](around:3000,LATLON);`
+    : `node["tourism"="attraction"](around:3000,LATLON);
+       way["tourism"="attraction"](around:3000,LATLON);`;
   const clauses = points.map(p => `
-     node["tourism"="attraction"](around:3000,${p.lat},${p.lon});
-     way["tourism"="attraction"](around:3000,${p.lat},${p.lon});
+     ${attractionClause.replace(/LATLON/g, `${p.lat},${p.lon}`)}
      ${historicClause.replace(/LATLON/g, `${p.lat},${p.lon}`)}
      node["tourism"="viewpoint"](around:3000,${p.lat},${p.lon});
      node["natural"~"waterfall|peak"](around:3000,${p.lat},${p.lon});`
