@@ -1349,6 +1349,14 @@ async function findAttractions(points, googleApiKey, sightPref){
       // available rather than leaving the day with no sights at all.
       return (strong.length ? strong : sorted).slice(0, 5);
     }
+    // "Major landmarks only" trusts Google's own global coverage: if Google Places has nothing
+    // tagged as a tourist attraction, museum, landmark, or park near any of this day's points,
+    // there's nothing major to show, full stop. Falling back to OpenStreetMap's much looser
+    // tourism=attraction tagging here would just swap "no landmark here" for "here's a decorative
+    // fountain" -- exactly the kind of result this mode exists to avoid. "Include local
+    // curiosities" keeps the OSM fallback below, since surfacing exactly that kind of quirky,
+    // Google-doesn't-categorize-it local detail is the entire point of that mode.
+    if(wantMajorOnly) return [];
   }
   const historicClause = wantMajorOnly
     ? `node["historic"~"${MAJOR_HISTORIC_TYPES}"](around:3000,LATLON);
