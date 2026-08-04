@@ -557,15 +557,6 @@
             <label class="choice"><input type="checkbox" name="lodging" value="hotel">Hotel</label>
           </div>
           <div class="hint">Choosing Camping shifts each day's length (within your min/max range) to end at a town with a tagged campground where possible, instead of a fixed distance — you'll see a note on any day where none turned up nearby.</div>
-          <div class="field" style="margin-top:12px;">
-            <label class="field-label" for="budget">Budget</label>
-            <select id="budget">
-              <option value="1">$ — budget</option>
-              <option value="2" selected>$$ — mid-range</option>
-              <option value="3">$$$ — comfortable</option>
-            </select>
-            <div class="hint">OpenStreetMap doesn't tag prices consistently, so this narrows lodging <em>type</em> rather than filtering by exact price — camping and hostels lean $, hotels lean $$–$$$. Each result also links out to Google Maps and Booking.com for real prices, phone numbers, and reviews.</div>
-          </div>
         </fieldset>
 
         <button type="submit" class="btn-primary" id="submitBtn">Plan my tour</button>
@@ -1582,7 +1573,6 @@ function buildShareURL(){
   params.set('veg', document.getElementById('vegetarianPref').checked ? '1' : '0');
   params.set('weather', document.getElementById('weatherPref').checked ? '1' : '0');
   params.set('lodging', getChecked('lodging').join(','));
-  params.set('budget', document.getElementById('budget').value);
   return `${location.origin}${location.pathname}?${params.toString()}`;
 }
 async function copyShareLink(){
@@ -1650,7 +1640,8 @@ function prefillFromURL(){
     const inp = document.querySelector(`input[name="lodging"][value="${v}"]`);
     if(inp){ inp.checked = true; inp.closest('.choice').classList.add('active'); }
   });
-  if(params.has('budget')) document.getElementById('budget').value = params.get('budget');
+  // Old shared links may still carry a `budget` param from before that field was removed
+  // (it never actually affected lodging results) -- simply ignored now, not restored anywhere.
 }
 
 // ---- Rendering ----
